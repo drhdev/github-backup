@@ -1,0 +1,28 @@
+[backup]
+# The defaults are filesystem, every repository accessible to the token,
+# incremental mirrors, and authenticated-user gists.
+storage = "filesystem" # "filesystem" or "s3"
+destination = "/mnt/backups/github" # local disk or mounted NAS
+cache_dir = "~/.cache/github-backup" # required as working storage for S3
+scope = "accessible" # "accessible", "owned", or "organizations"
+organizations = [] # required when scope = "organizations"
+mode = "incremental" # "incremental" or "snapshot"
+include_gists = true
+workers = 4
+git_timeout_seconds = 3600
+lock_timeout_seconds = 0
+
+[github]
+api_url = "https://api.github.com"
+api_version = "2022-11-28"
+token_env = "GITHUB_TOKEN"
+timeout_seconds = 30
+max_retries = 5
+
+[s3]
+bucket = ""
+prefix = "github-backup"
+# endpoint_url = "https://s3.example.com"
+# region = "eu-central-1"
+# storage_class = "STANDARD_IA"
+# server_side_encryption = "AES256"

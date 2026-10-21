@@ -1,0 +1,158 @@
+from __future__ import annotations
+
+import io
+import tempfile
+import unittest
+from contextlib import redirect_stdout
+from datetime import UTC, datetime
+from pathlib import Path
+from unittest.mock import Mock, patch
+
+from github_backup.cli import _apply_cli_overrides, build_parser, main
+from github_backup.config import BackupConfig
+from github_backup.errors import ConfigurationError
+from github_backup.models import BackupResult, Resource, RunManifest
+
+
+def _resource() -> Resource:
+    return Resource(
+        kind="repository",
+        identifier="1",
+        name="project",
+        owner="owner",
+        clone_url="https://github.com/owner/project.git",
+        html_url="https://github.com/owner/project",
+        private=True,
+    )
+
+
+class CliTests(unittest.TestCase):
+    def test_runtime_flags_override_configuration(self) -> None:
+        parser = build_parser()
+        arguments = parser.parse_args(
+            [
+                "run",
+                "--storage",
+                "s3",
+                "--s3-bucket",
+                "bucket",
+                "--scope",
+                "organizations",
+                "--organization",
+                "example",
+                "--mode",
+                "snapshot",
+                "--no-gists",
+                "--workers",
+                "2",
+            ]
+        )
+        config = _apply_cli_overrides(BackupConfig(), arguments)
+        self.assertEqual(config.storage, "s3")
+        self.assertEqual(config.s3.bucket, "bucket")
+        self.assertEqual(config.organizations, ("example",))
+        self.assertEqual(config.mode, "snapshot")
+        self.assertFalse(config.include_gists)
+        self.assertEqual(config.workers, 2)
+
+    def test_invalid_zero_workers_is_not_silently_ignored(self) -> None:
+        arguments = build_parser().parse_args(["run", "--workers", "0"])
+        with self.assertRaisesRegex(ConfigurationError, "workers must be between"):
+            _apply_cli_overrides(BackupConfig(), arguments)
+
+    def test_list_command_prints_resources(self) -> None:
+        github = Mock()
+        github.authenticated_user.return_value = "owner"
+        github.repositories.return_value = [_resource()]
+        github.gists.return_value = []
+        output = io.StringIO()
+        with (
+            patch("github_backup.cli.load_config", return_value=BackupConfig()),
+            patch("github_backup.cli.read_token", return_value="token"),
+            patch("github_backup.cli.GitHubClient", return_value=github),
+            redirect_stdout(output),
+        ):
+            main(["list"])
+        self.assertIn("repository private owner/project", output.getvalue())
+        self.assertIn("1 resources accessible to owner", output.getvalue())
+
+    def test_check_command_prints_dependency_and_discovery_status(self) -> None:
+        github = Mock()
+        github.authenticated_user.return_value = "owner"
+        github.repositories.return_value = [_resource()]
+        github.gists.return_value = []
+        git = Mock()
+        git.ensure_available.return_value = "git version test"
+        output = io.StringIO()
+        with (
+            patch("github_backup.cli.load_config", return_value=BackupConfig()),
+            patch("github_backup.cli.read_token", return_value="token"),
+            patch("github_backup.cli.GitHubClient", return_value=github),
+            patch("github_backup.cli.GitRunner", return_value=git),
+            redirect_stdout(output),
+        ):
+            main(["check"])
+        self.assertIn("authenticated as owner; 1 repos; 0 gists", output.getvalue())
+
+    def test_run_returns_two_when_a_resource_failed(self) -> None:
+        resource = _resource()
+        now = datetime.now(UTC).isoformat()
+        manifest = RunManifest(
+            run_id="run-id",
+            user="owner",
+            storage="filesystem",
+            scope="accessible",
+            mode="incremental",
+            started_at=now,
+            finished_at=now,
+            results=[
+                BackupResult(
+                    resource=resource,
+                    status="failed",
+                    started_at=now,
+                    finished_at=now,
+                    duration_seconds=0.1,
+                    error="failure",
+                )
+            ],
+        )
+        service = Mock()
+        service.run.return_value = (manifest, "/backup/manifest.json")
+        with (
+            patch("github_backup.cli.load_config", return_value=BackupConfig()),
+            patch("github_backup.cli.read_token", return_value="token"),
+            patch("github_backup.cli.GitHubClient"),
+            patch("github_backup.cli.GitRunner"),
+            patch("github_backup.cli.create_storage"),
+            patch("github_backup.cli.BackupService", return_value=service),
+            self.assertRaisesRegex(SystemExit, "2"),
+        ):
+            main(["run"])
+
+    def test_expected_error_returns_one(self) -> None:
+        with (
+            patch(
+                "github_backup.cli.load_config",
+                side_effect=ConfigurationError("bad configuration"),
+            ),
+            self.assertRaisesRegex(SystemExit, "1"),
+        ):
+            main(["run"])
+
+    def test_default_config_file_is_detected(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "github-backup.toml").write_text("", encoding="utf-8")
+            github = Mock()
+            github.authenticated_user.return_value = "owner"
+            github.repositories.return_value = []
+            github.gists.return_value = []
+            with (
+                patch("github_backup.cli.Path.is_file", return_value=True),
+                patch("github_backup.cli.load_config", return_value=BackupConfig()) as loader,
+                patch("github_backup.cli.read_token", return_value="token"),
+                patch("github_backup.cli.GitHubClient", return_value=github),
+                redirect_stdout(io.StringIO()),
+            ):
+                main(["list", "--json"])
+            loader.assert_called_once_with(Path("github-backup.toml"))
