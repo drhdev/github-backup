@@ -34,6 +34,31 @@ def _resource() -> Resource:
 
 
 class CliTests(unittest.TestCase):
+    def test_help_command_does_not_require_configuration_or_token(self) -> None:
+        output = io.StringIO()
+        with (
+            patch(
+                "github_backup.cli.load_config",
+                side_effect=AssertionError("configuration must not be loaded"),
+            ),
+            patch(
+                "github_backup.cli.read_token",
+                side_effect=AssertionError("token must not be read"),
+            ),
+            redirect_stdout(output),
+        ):
+            main(["help"])
+        self.assertIn("usage: github-backup", output.getvalue())
+        self.assertIn("help", output.getvalue())
+
+    def test_help_command_prints_command_specific_options(self) -> None:
+        output = io.StringIO()
+        with redirect_stdout(output):
+            main(["help", "run"])
+        self.assertIn("usage: github-backup run", output.getvalue())
+        self.assertIn("--include", output.getvalue())
+        self.assertIn("--snapshot-retention", output.getvalue())
+
     def test_runtime_flags_override_configuration(self) -> None:
         parser = build_parser()
         arguments = parser.parse_args(

@@ -1,0 +1,76 @@
+name: Bug report
+description: Report a reproducible, non-sensitive defect
+title: "bug: "
+labels: [bug, triage]
+body:
+  - type: markdown
+    attributes:
+      value: >-
+        Never include tokens, private repository names, private URLs, proprietary source,
+        manifests, or backup contents. Report security issues through SECURITY.md.
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Output of `github-backup --version` or the container tag/digest.
+    validations:
+      required: true
+  - type: dropdown
+    id: deployment
+    attributes:
+      label: Deployment
+      options:
+        - Native Python
+        - Docker
+        - Other
+    validations:
+      required: true
+  - type: dropdown
+    id: storage
+    attributes:
+      label: Storage
+      options:
+        - Local filesystem
+        - NAS-mounted filesystem
+        - Amazon S3
+        - S3-compatible service
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: OS, architecture, Python/Docker version, Git/Git LFS version, and GitHub.com or GHES version.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Reproduction steps
+      description: Minimal commands and sanitized configuration needed to reproduce the problem.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior and sanitized logs
+      render: shell
+    validations:
+      required: true
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Safety checks
+      options:
+        - label: I removed all secrets and private/proprietary data.
+          required: true
+        - label: This is not a security vulnerability.
+          required: true
+        - label: I searched existing issues.
+          required: true

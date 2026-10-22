@@ -1,3 +1,8 @@
 """Back up GitHub repositories and gists."""
 
-__version__ = "1.1.0"
+from importlib.metadata import PackageNotFoundError, version
+
+try:
+    __version__ = version("github-backup")
+except PackageNotFoundError:  # pragma: no cover - only possible from an uninstalled source tree
+    __version__ = "0.0.0+unknown"

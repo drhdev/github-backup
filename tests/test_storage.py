@@ -37,7 +37,7 @@ def _resource(source: Path, name: str = "project") -> Resource:
 
 
 class FilesystemStorageTests(unittest.TestCase):
-    def test_snapshot_bundle_and_metadata(self) -> None:
+    def test_snapshot_bundle_metadata_verification_and_restore(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             source = root / "source"
@@ -79,6 +79,10 @@ class FilesystemStorageTests(unittest.TestCase):
             with redirect_stdout(output):
                 _verify_local(config)
             self.assertIn("Verified 1 mirrors, 1 bundles", output.getvalue())
+
+            restored = root / "restored"
+            subprocess.run(["git", "clone", "-q", str(artifact), str(restored)], check=True)
+            self.assertEqual((restored / "file.txt").read_text(encoding="utf-8"), "content\n")
 
     def test_empty_repository_snapshot_uses_archive(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

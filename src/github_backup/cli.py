@@ -33,11 +33,22 @@ from github_backup.storage import create_storage
 LOGGER = logging.getLogger(__name__)
 
 
-def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
+class BackupArgumentParser(argparse.ArgumentParser):
+    """Argument parser that exposes the registered command parsers for CLI help."""
+
+    command_parsers: dict[str, argparse.ArgumentParser]
+
+
+def build_parser() -> BackupArgumentParser:
+    parser = BackupArgumentParser(
         prog="github-backup",
         description="Back up GitHub Git data and optional service data accessible to a token.",
+        epilog=(
+            "Start with 'github-backup help run' for backup options or "
+            "'github-backup help check' for preflight checks."
+        ),
     )
+    parser.command_parsers = {}
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     parser.add_argument(
         "--config",
@@ -48,10 +59,20 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--json-logs", action="store_true", help="emit structured JSON logs")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    run = subparsers.add_parser("run", help="discover and back up resources")
+    run = subparsers.add_parser(
+        "run",
+        help="discover and back up resources",
+        description="Discover resources visible to the token and create or update their backups.",
+    )
+    parser.command_parsers["run"] = run
     _add_runtime_options(run)
 
-    list_command = subparsers.add_parser("list", help="list resources without backing them up")
+    list_command = subparsers.add_parser(
+        "list",
+        help="list resources without backing them up",
+        description="List resources visible to the token without changing backup storage.",
+    )
+    parser.command_parsers["list"] = list_command
     list_command.add_argument(
         "--scope", choices=("accessible", "owned", "organizations"), help="repository scope"
     )
@@ -64,7 +85,12 @@ def build_parser() -> argparse.ArgumentParser:
     _add_additional_data_option(list_command)
     list_command.add_argument("--json", action="store_true", help="emit JSON")
 
-    check = subparsers.add_parser("check", help="validate Git, credentials, and resource discovery")
+    check = subparsers.add_parser(
+        "check",
+        help="validate Git, credentials, storage, and resource discovery",
+        description="Run preflight checks without creating a backup.",
+    )
+    parser.command_parsers["check"] = check
     check.add_argument(
         "--scope", choices=("accessible", "owned", "organizations"), help="repository scope"
     )
@@ -73,8 +99,26 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_additional_data_option(check)
 
-    verify = subparsers.add_parser("verify", help="verify local mirrors and snapshot artifacts")
+    verify = subparsers.add_parser(
+        "verify",
+        help="verify local mirrors and snapshot artifacts",
+        description="Verify an existing filesystem/NAS backup without a GitHub token.",
+    )
+    parser.command_parsers["verify"] = verify
     verify.add_argument("--destination", type=Path, help="local/NAS backup directory")
+
+    help_command = subparsers.add_parser(
+        "help",
+        help="show general help or detailed help for a command",
+        description="Show general help or detailed help for one command.",
+    )
+    help_command.add_argument(
+        "topic",
+        nargs="?",
+        choices=tuple(parser.command_parsers),
+        metavar="COMMAND",
+        help="command to explain: run, list, check, or verify",
+    )
     return parser
 
 
@@ -160,6 +204,10 @@ def _add_additional_data_option(parser: argparse.ArgumentParser) -> None:
 def main(argv: Sequence[str] | None = None) -> None:
     parser = build_parser()
     arguments = parser.parse_args(argv)
+    if arguments.command == "help":
+        topic = cast(str | None, arguments.topic)
+        (parser.command_parsers[topic] if topic else parser).print_help()
+        return
     configure_logging(verbose=arguments.verbose, json_logs=arguments.json_logs)
     try:
         config_path = arguments.config

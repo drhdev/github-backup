@@ -1,0 +1,41 @@
+name: Feature request
+description: Propose a non-sensitive capability or improvement
+title: "feat: "
+labels: [enhancement, triage]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What operational or recovery problem should be solved?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: Include defaults, opt-in behavior, CLI/configuration impact, and restore expectations.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives and tradeoffs
+    validations:
+      required: true
+  - type: textarea
+    id: security
+    attributes:
+      label: Security and operational impact
+      description: Token permissions, sensitive data, storage, retention, rate limits, and compatibility.
+    validations:
+      required: true
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: I removed all secrets and private/proprietary data.
+          required: true
+        - label: I searched existing issues and the roadmap in the README.
+          required: true

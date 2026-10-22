@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/drhdev/github-backup/security/advisories/new
+    about: Privately report token, private-data, or other security vulnerabilities.
+  - name: Support guidance
+    url: https://github.com/drhdev/github-backup/blob/main/SUPPORT.md
+    about: Read the support and diagnostic-data guidance before filing an issue.

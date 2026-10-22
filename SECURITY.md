@@ -2,11 +2,35 @@
 
 ## Supported versions
 
-Security fixes are provided for the latest `1.x` release. Older versions should be upgraded before reporting operational problems.
+| Version | Supported |
+|---|---|
+| Latest `1.x` release | Yes |
+| Older releases and unreleased commits | No |
+
+Security fixes are provided for the latest published `1.x` release. Upgrade before reporting an
+operational problem against an older version.
 
 ## Reporting a vulnerability
 
-Do not open a public issue for a suspected vulnerability that could expose GitHub tokens, private repository data, backup credentials, or storage contents. Use GitHub's private vulnerability reporting feature for this repository. Include the affected version, deployment model, reproduction steps, and impact. Do not include live credentials or private source code.
+Do not open a public issue for a suspected vulnerability that could expose GitHub tokens, private
+repository data, backup credentials, or storage contents. Use this repository's
+[private vulnerability reporting form](https://github.com/drhdev/github-backup/security/advisories/new).
+
+Include the affected version or image digest, deployment model, reproduction steps, expected and
+actual behavior, impact, and any proposed mitigation. Replace real secrets and private data with
+safe test values. If private reporting is unavailable, contact the repository owner through the
+contact method on their GitHub profile and ask for a private channel without sending exploit or
+secret material in the first message.
+
+Maintainers will acknowledge and assess reports on a best-effort basis, coordinate a fix and
+release when validated, and credit reporters who request credit. Do not publicly disclose an
+unresolved vulnerability before maintainers have had a reasonable opportunity to address it.
+
+## Release integrity
+
+Official releases are GitHub releases produced from version tags by the release workflow. Verify
+downloaded assets with `SHA256SUMS` and GitHub artifact attestations. Prefer container digests over
+mutable tags in controlled environments. See [`docs/RELEASING.md`](docs/RELEASING.md).
 
 ## Deployment requirements
 
@@ -20,3 +44,6 @@ Do not open a public issue for a suspected vulnerability that could expose GitHu
 - Treat optional metadata archives as highly sensitive: they can contain private issues and pull requests, collaborator and deployment metadata, and security alerts. Secret names are exported when accessible, but GitHub never returns secret values.
 - Treat release, Actions, and LFS archives as untrusted user-controlled files. Do not execute or extract them outside an isolated restore workflow.
 - Monitor nonzero exit codes and test restoration on a schedule.
+- Keep the application, Git, Git LFS, Python or container runtime, host OS, and dependencies
+  patched. Dependabot, dependency review, `pip-audit`, CodeQL, and OpenSSF Scorecard provide
+  repository signals but do not replace operational vulnerability management.

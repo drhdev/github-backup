@@ -25,7 +25,9 @@ RUN apt-get update \
     && useradd --uid 10001 --gid ghbackup --create-home ghbackup
 
 COPY --from=builder /wheels /wheels
-RUN python -m pip install --no-cache-dir /wheels/* && rm -rf /wheels
+RUN python -m pip install --no-cache-dir /wheels/* \
+    && python -m pip uninstall --yes pip \
+    && rm -rf /wheels
 
 USER ghbackup
 WORKDIR /home/ghbackup
