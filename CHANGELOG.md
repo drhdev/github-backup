@@ -8,6 +8,13 @@ This file is maintained by Release Please from Conventional Commits. Do not manu
 release section; describe user-visible changes in commit messages and edit the generated release
 pull request when additional context is useful.
 
+## [1.1.1](https://github.com/drhdev/github-backup/compare/v1.1.0...v1.1.1) (2026-10-22)
+
+
+### Continuous Integration
+
+* harden workflow configuration ([8dcf95c](https://github.com/drhdev/github-backup/commit/8dcf95cd734b36e84b80eac3b5b63adfa84510d9))
+
 ## [1.1.0](https://github.com/drhdev/github-backup/releases/tag/v1.1.0) (2026-10-22)
 
 ### Features
