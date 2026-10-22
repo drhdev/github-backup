@@ -10,6 +10,9 @@ pull request when additional context is useful.
 
 ## [1.1.2](https://github.com/drhdev/github-backup/compare/v1.1.1...v1.1.2) (2026-10-22)
 
+### Security
+
+* restrict release automation credentials to their required consumers and repository, remove unnecessary workflow-token permissions, and ignore local credential artifacts ([2ba78b2](https://github.com/drhdev/github-backup/commit/2ba78b2a33e93590bee21929800aa77c9233ff14))
 
 ### Build System
 
