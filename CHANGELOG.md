@@ -8,6 +8,14 @@ This file is maintained by Release Please from Conventional Commits. Do not manu
 release section; describe user-visible changes in commit messages and edit the generated release
 pull request when additional context is useful.
 
+## [1.1.2](https://github.com/drhdev/github-backup/compare/v1.1.1...v1.1.2) (2026-10-22)
+
+
+### Build System
+
+* **deps-dev:** update grouped Python dependencies ([939abdb](https://github.com/drhdev/github-backup/commit/939abdbddc44df26855b30ecb7d556ad887378a5))
+* **deps:** update CodeQL Action to v4.39.1 ([7b4a93b](https://github.com/drhdev/github-backup/commit/7b4a93b219ca9c5fb72f48a62ddb950bd3f6e61b))
+
 ## [1.1.1](https://github.com/drhdev/github-backup/compare/v1.1.0...v1.1.1) (2026-10-22)
 
 
