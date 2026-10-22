@@ -12,6 +12,10 @@ class ConfigurationError(BackupError):
 class GitHubAPIError(BackupError):
     """Raised when the GitHub API cannot satisfy a request."""
 
+    def __init__(self, message: str, *, status_code: int | None = None) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+
 
 class GitCommandError(BackupError):
     """Raised when a Git subprocess fails."""

@@ -8,9 +8,17 @@ scope = "accessible" # "accessible", "owned", or "organizations"
 organizations = [] # required when scope = "organizations"
 mode = "incremental" # "incremental" or "snapshot"
 include_gists = true
+# Optional and disabled by default. Values: "wikis", "metadata", "releases",
+# "actions", "lfs". Select all five at runtime with: --include all
+additional_data = []
 workers = 4
 git_timeout_seconds = 3600
+git_max_retries = 3
+verify_mirrors = true
 lock_timeout_seconds = 0
+minimum_free_space_gib = 1.0
+allow_insecure_permissions = false
+snapshot_retention = 0 # 0 keeps every snapshot
 
 [github]
 api_url = "https://api.github.com"
@@ -18,6 +26,7 @@ api_version = "2022-11-28"
 token_env = "GITHUB_TOKEN"
 timeout_seconds = 30
 max_retries = 5
+allow_insecure_http = false
 
 [s3]
 bucket = ""
@@ -25,4 +34,6 @@ prefix = "github-backup"
 # endpoint_url = "https://s3.example.com"
 # region = "eu-central-1"
 # storage_class = "STANDARD_IA"
-# server_side_encryption = "AES256"
+server_side_encryption = "AES256"
+lock_lease_seconds = 900
+allow_insecure_endpoint = false

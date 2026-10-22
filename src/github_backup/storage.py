@@ -6,17 +6,20 @@ import hashlib
 import json
 import logging
 import os
+import shutil
 import tarfile
 import uuid
 from abc import ABC, abstractmethod
-from contextlib import suppress
+from contextlib import AbstractContextManager, suppress
 from pathlib import Path
 from typing import Any
 
 from github_backup.config import BackupConfig, BackupMode
 from github_backup.errors import StorageError
 from github_backup.gitops import GitRunner
+from github_backup.locking import BackupLock, CombinedLock, S3LeaseLock
 from github_backup.models import Resource, RunManifest
+from github_backup.security import prepare_private_directory, require_free_space
 
 LOGGER = logging.getLogger(__name__)
 
@@ -38,6 +41,14 @@ class StorageBackend(ABC):
         return self.workspace_root / resource.relative_path
 
     @abstractmethod
+    def prepare(self) -> None:
+        """Validate and prepare local working storage."""
+
+    @abstractmethod
+    def run_lock(self) -> AbstractContextManager[object]:
+        """Prevent overlapping runs for this destination."""
+
+    @abstractmethod
     def publish(
         self,
         resource: Resource,
@@ -54,11 +65,37 @@ class StorageBackend(ABC):
     def write_manifest(self, manifest: RunManifest) -> str:
         """Persist both immutable and latest run manifests."""
 
+    @abstractmethod
+    def publish_supplement(
+        self,
+        repository: Resource,
+        component: str,
+        archive: Path,
+        sha256: str,
+        mode: BackupMode,
+        run_id: str,
+    ) -> str:
+        """Publish one self-contained supplementary-data archive."""
+
+    @abstractmethod
+    def apply_retention(self, manifest: RunManifest) -> None:
+        """Remove snapshots exceeding configured retention after a successful run."""
+
 
 class FilesystemStorage(StorageBackend):
     @property
     def workspace_root(self) -> Path:
         return self.config.destination / "mirrors"
+
+    def prepare(self) -> None:
+        prepare_private_directory(
+            self.config.destination,
+            allow_insecure=self.config.allow_insecure_permissions,
+        )
+        require_free_space(self.config.destination, self.config.minimum_free_space_gib)
+
+    def run_lock(self) -> AbstractContextManager[object]:
+        return BackupLock(self.lock_path, wait_seconds=self.config.lock_timeout_seconds)
 
     def publish(
         self,
@@ -91,6 +128,45 @@ class FilesystemStorage(StorageBackend):
         )
         return str(manifest_path)
 
+    def publish_supplement(
+        self,
+        repository: Resource,
+        component: str,
+        archive: Path,
+        sha256: str,
+        mode: BackupMode,
+        run_id: str,
+    ) -> str:
+        del sha256
+        root = (
+            self.config.destination / "snapshots" / run_id
+            if mode == "snapshot"
+            else self.config.destination / "supplemental" / "latest"
+        )
+        destination = root / "repos" / repository.owner / repository.name / f"{component}.tar.gz"
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        temporary = destination.with_name(f".{destination.name}.tmp-{uuid.uuid4().hex}")
+        try:
+            with archive.open("rb") as source, temporary.open("wb") as output:
+                shutil.copyfileobj(source, output, length=1024 * 1024)
+                output.flush()
+                os.fsync(output.fileno())
+            temporary.replace(destination)
+        except BaseException:
+            temporary.unlink(missing_ok=True)
+            raise
+        return str(destination)
+
+    def apply_retention(self, manifest: RunManifest) -> None:
+        if not _retention_enabled(self.config, manifest):
+            return
+        snapshots = self.config.destination / "snapshots"
+        if not snapshots.exists():
+            return
+        runs = sorted(path for path in snapshots.iterdir() if path.is_dir())
+        for expired in runs[: -self.config.snapshot_retention]:
+            shutil.rmtree(expired)
+
 
 class S3Storage(StorageBackend):
     def __init__(self, config: BackupConfig) -> None:
@@ -106,7 +182,11 @@ class S3Storage(StorageBackend):
             "s3",
             endpoint_url=config.s3.endpoint_url,
             region_name=config.s3.region,
-            config=Config(retries={"mode": "adaptive", "max_attempts": 10}),
+            config=Config(
+                retries={"mode": "adaptive", "max_attempts": 10},
+                connect_timeout=30,
+                read_timeout=30,
+            ),
         )
 
     @property
@@ -115,6 +195,26 @@ class S3Storage(StorageBackend):
             f"{self.config.s3.endpoint_url}|{self.config.s3.bucket}|{self.config.s3.prefix}".encode()
         ).hexdigest()[:16]
         return self.config.cache_dir / identity / "mirrors"
+
+    def prepare(self) -> None:
+        local_root = self.workspace_root.parent
+        prepare_private_directory(
+            local_root,
+            allow_insecure=self.config.allow_insecure_permissions,
+        )
+        require_free_space(local_root, self.config.minimum_free_space_gib)
+
+    def run_lock(self) -> AbstractContextManager[object]:
+        local = BackupLock(self.lock_path, wait_seconds=self.config.lock_timeout_seconds)
+        remote = S3LeaseLock(
+            self._client,
+            bucket=self.config.s3.bucket,
+            key=self._key("locks", "run.lock"),
+            lease_seconds=self.config.s3.lock_lease_seconds,
+            wait_seconds=self.config.lock_timeout_seconds,
+            put_options=self._lock_options(),
+        )
+        return CombinedLock(local, remote)
 
     def publish(
         self,
@@ -165,6 +265,63 @@ class S3Storage(StorageBackend):
         self._put_json(latest_key, manifest.to_dict())
         return f"s3://{self.config.s3.bucket}/{immutable_key}"
 
+    def publish_supplement(
+        self,
+        repository: Resource,
+        component: str,
+        archive: Path,
+        sha256: str,
+        mode: BackupMode,
+        run_id: str,
+    ) -> str:
+        prefix = f"snapshots/{run_id}" if mode == "snapshot" else "latest"
+        key = self._key(
+            prefix,
+            "supplemental",
+            "repos",
+            repository.owner,
+            repository.name,
+            f"{component}.tar.gz",
+        )
+        if mode == "incremental" and self._remote_metadata(key, "sha256") == sha256:
+            return f"s3://{self.config.s3.bucket}/{key}"
+        options: dict[str, Any] = self._upload_options()
+        options["Metadata"] = {"sha256": sha256}
+        try:
+            self._client.upload_file(
+                str(archive), self.config.s3.bucket, key, ExtraArgs=options
+            )
+        except Exception as exc:
+            raise StorageError(
+                f"failed to upload s3://{self.config.s3.bucket}/{key}: {exc}"
+            ) from exc
+        return f"s3://{self.config.s3.bucket}/{key}"
+
+    def apply_retention(self, manifest: RunManifest) -> None:
+        if not _retention_enabled(self.config, manifest):
+            return
+        base_prefix = self._key("snapshots") + "/"
+        run_ids: set[str] = set()
+        continuation: str | None = None
+        while True:
+            request: dict[str, Any] = {
+                "Bucket": self.config.s3.bucket,
+                "Prefix": base_prefix,
+            }
+            if continuation:
+                request["ContinuationToken"] = continuation
+            response = self._client.list_objects_v2(**request)
+            for item in response.get("Contents", []):
+                key = str(item["Key"])
+                remainder = key.removeprefix(base_prefix)
+                if "/" in remainder:
+                    run_ids.add(remainder.split("/", 1)[0])
+            if not response.get("IsTruncated"):
+                break
+            continuation = str(response["NextContinuationToken"])
+        for run_id in sorted(run_ids)[: -self.config.snapshot_retention]:
+            self._delete_prefix(f"{base_prefix}{run_id}/")
+
     def _key(self, *parts: str) -> str:
         return "/".join(part.strip("/") for part in (self.config.s3.prefix, *parts) if part)
 
@@ -185,6 +342,9 @@ class S3Storage(StorageBackend):
             ) from exc
 
     def _remote_digest(self, key: str) -> str | None:
+        return self._remote_metadata(key, "ref-digest")
+
+    def _remote_metadata(self, key: str, field: str) -> str | None:
         try:
             response = self._client.head_object(Bucket=self.config.s3.bucket, Key=key)
         except Exception as exc:
@@ -196,7 +356,7 @@ class S3Storage(StorageBackend):
                 f"failed to inspect s3://{self.config.s3.bucket}/{key}: {exc}"
             ) from exc
         metadata = response.get("Metadata", {})
-        value = metadata.get("ref-digest")
+        value = metadata.get(field)
         return str(value) if value else None
 
     def _upload_options(self) -> dict[str, str]:
@@ -206,6 +366,32 @@ class S3Storage(StorageBackend):
         if self.config.s3.server_side_encryption:
             options["ServerSideEncryption"] = self.config.s3.server_side_encryption
         return options
+
+    def _lock_options(self) -> dict[str, str]:
+        options: dict[str, str] = {}
+        if self.config.s3.server_side_encryption:
+            options["ServerSideEncryption"] = self.config.s3.server_side_encryption
+        return options
+
+    def _delete_prefix(self, prefix: str) -> None:
+        continuation: str | None = None
+        while True:
+            request: dict[str, Any] = {
+                "Bucket": self.config.s3.bucket,
+                "Prefix": prefix,
+            }
+            if continuation:
+                request["ContinuationToken"] = continuation
+            response = self._client.list_objects_v2(**request)
+            keys = [{"Key": str(item["Key"])} for item in response.get("Contents", [])]
+            if keys:
+                self._client.delete_objects(
+                    Bucket=self.config.s3.bucket,
+                    Delete={"Objects": keys, "Quiet": True},
+                )
+            if not response.get("IsTruncated"):
+                break
+            continuation = str(response["NextContinuationToken"])
 
 
 def create_storage(config: BackupConfig) -> StorageBackend:
@@ -264,3 +450,13 @@ def cleanup_empty_artifact_directories(root: Path) -> None:
                 path.rmdir()
     with suppress(OSError):
         root.rmdir()
+
+
+def _retention_enabled(config: BackupConfig, manifest: RunManifest) -> bool:
+    return (
+        manifest.mode == "snapshot"
+        and config.snapshot_retention > 0
+        and manifest.fatal_error is None
+        and manifest.counts["failed"] == 0
+        and manifest.counts["partial"] == 0
+    )

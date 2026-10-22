@@ -38,6 +38,7 @@ class GitHubClientTests(unittest.TestCase):
                             "archived": False,
                             "default_branch": "main",
                             "updated_at": "2026-01-01T00:00:00Z",
+                            "has_wiki": True,
                         },
                         {
                             "id": 2,
@@ -56,6 +57,7 @@ class GitHubClientTests(unittest.TestCase):
         self.assertEqual(len(resources), 1)
         self.assertEqual(resources[0].relative_path, "repos/wanted-org/project.git")
         self.assertTrue(resources[0].private)
+        self.assertTrue(resources[0].has_wiki)
 
     def test_secret_gist_is_private(self) -> None:
         client = StubGitHubClient(

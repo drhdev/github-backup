@@ -6,8 +6,8 @@ from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from typing import Any, Literal
 
-ResourceKind = Literal["repository", "gist"]
-ResultStatus = Literal["success", "failed", "skipped"]
+ResourceKind = Literal["repository", "gist", "wiki"]
+ResultStatus = Literal["success", "partial", "failed", "skipped"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -22,11 +22,14 @@ class Resource:
     updated_at: str | None = None
     archived: bool = False
     default_branch: str | None = None
+    has_wiki: bool = False
 
     @property
     def relative_path(self) -> str:
         if self.kind == "repository":
             return f"repos/{self.owner}/{self.name}.git"
+        if self.kind == "wiki":
+            return f"wikis/{self.owner}/{self.name}.wiki.git"
         return f"gists/{self.identifier}.git"
 
     def to_dict(self) -> dict[str, Any]:
@@ -51,6 +54,25 @@ class BackupResult:
         return payload
 
 
+@dataclass(frozen=True, slots=True)
+class ComponentResult:
+    repository: str
+    component: str
+    status: ResultStatus
+    started_at: str
+    finished_at: str
+    duration_seconds: float
+    artifact: str | None = None
+    sha256: str | None = None
+    files: int = 0
+    bytes: int = 0
+    unavailable: tuple[str, ...] = ()
+    error: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
 @dataclass(slots=True)
 class RunManifest:
     run_id: str
@@ -61,13 +83,15 @@ class RunManifest:
     started_at: str
     finished_at: str | None = None
     results: list[BackupResult] = field(default_factory=list)
+    components: list[ComponentResult] = field(default_factory=list)
     fatal_error: str | None = None
 
     @property
     def counts(self) -> dict[str, int]:
         return {
             status: sum(result.status == status for result in self.results)
-            for status in ("success", "failed", "skipped")
+            + sum(result.status == status for result in self.components)
+            for status in ("success", "partial", "failed", "skipped")
         }
 
     def finish(self) -> None:
@@ -75,7 +99,7 @@ class RunManifest:
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "schema_version": 1,
+            "schema_version": 2,
             "run_id": self.run_id,
             "user": self.user,
             "storage": self.storage,
@@ -86,4 +110,5 @@ class RunManifest:
             "counts": self.counts,
             "fatal_error": self.fatal_error,
             "results": [result.to_dict() for result in self.results],
+            "components": [result.to_dict() for result in self.components],
         }

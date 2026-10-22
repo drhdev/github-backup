@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import hashlib
 import io
+import json
 import tempfile
 import unittest
 from contextlib import redirect_stdout
@@ -8,7 +10,12 @@ from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from github_backup.cli import _apply_cli_overrides, build_parser, main
+from github_backup.cli import (
+    _apply_cli_overrides,
+    _verify_component_digests,
+    build_parser,
+    main,
+)
 from github_backup.config import BackupConfig
 from github_backup.errors import ConfigurationError
 from github_backup.models import BackupResult, Resource, RunManifest
@@ -45,6 +52,8 @@ class CliTests(unittest.TestCase):
                 "--no-gists",
                 "--workers",
                 "2",
+                "--include",
+                "all",
             ]
         )
         config = _apply_cli_overrides(BackupConfig(), arguments)
@@ -54,6 +63,10 @@ class CliTests(unittest.TestCase):
         self.assertEqual(config.mode, "snapshot")
         self.assertFalse(config.include_gists)
         self.assertEqual(config.workers, 2)
+        self.assertEqual(
+            config.additional_data,
+            ("wikis", "metadata", "releases", "actions", "lfs"),
+        )
 
     def test_invalid_zero_workers_is_not_silently_ignored(self) -> None:
         arguments = build_parser().parse_args(["run", "--workers", "0"])
@@ -83,16 +96,19 @@ class CliTests(unittest.TestCase):
         github.gists.return_value = []
         git = Mock()
         git.ensure_available.return_value = "git version test"
+        storage = Mock()
         output = io.StringIO()
         with (
             patch("github_backup.cli.load_config", return_value=BackupConfig()),
             patch("github_backup.cli.read_token", return_value="token"),
             patch("github_backup.cli.GitHubClient", return_value=github),
             patch("github_backup.cli.GitRunner", return_value=git),
+            patch("github_backup.cli.create_storage", return_value=storage),
             redirect_stdout(output),
         ):
             main(["check"])
         self.assertIn("authenticated as owner; 1 repos; 0 gists", output.getvalue())
+        storage.prepare.assert_called_once_with()
 
     def test_run_returns_two_when_a_resource_failed(self) -> None:
         resource = _resource()
@@ -156,3 +172,39 @@ class CliTests(unittest.TestCase):
             ):
                 main(["list", "--json"])
             loader.assert_called_once_with(Path("github-backup.toml"))
+
+    def test_verify_does_not_require_a_github_token(self) -> None:
+        with (
+            patch("github_backup.cli.load_config", return_value=BackupConfig()),
+            patch("github_backup.cli._verify_local") as verify,
+            patch(
+                "github_backup.cli.read_token",
+                side_effect=AssertionError("token must not be read"),
+            ),
+        ):
+            main(["verify"])
+        verify.assert_called_once()
+
+    def test_component_digest_verification_detects_corruption(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            artifact = root / "supplemental/latest/repos/o/r/metadata.tar.gz"
+            artifact.parent.mkdir(parents=True)
+            artifact.write_bytes(b"archive")
+            digest = hashlib.sha256(b"archive").hexdigest()
+            manifest = root / "manifests/latest.json"
+            manifest.parent.mkdir()
+            manifest.write_text(
+                json.dumps(
+                    {
+                        "components": [
+                            {"artifact": str(artifact), "sha256": digest}
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            self.assertEqual(_verify_component_digests(root), 1)
+            artifact.write_bytes(b"corrupted")
+            with self.assertRaisesRegex(ConfigurationError, "SHA-256 mismatch"):
+                _verify_component_digests(root)

@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import os
 import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import Mock, patch
 
+from github_backup.errors import GitCommandError
 from github_backup.gitops import GitRunner
 
 
@@ -45,6 +48,31 @@ class GitRunnerTests(unittest.TestCase):
             self.assertTrue(bundle.is_file())
             config = (mirror / "config").read_text(encoding="utf-8")
             self.assertNotIn("super-secret-token", config)
+
+    def test_authenticated_http_remote_is_rejected_without_retry(self) -> None:
+        sleeper = Mock()
+        runner = GitRunner("secret", timeout_seconds=30, sleeper=sleeper)
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            self.assertRaisesRegex(GitCommandError, "must use HTTPS"),
+        ):
+            runner.update_mirror("http://github.example/owner/repo.git", Path(directory) / "x")
+        sleeper.assert_not_called()
+
+    def test_authenticated_git_disables_inherited_http_tracing(self) -> None:
+        completed = subprocess.CompletedProcess(["git", "--version"], 0, "git version test\n", "")
+        runner = GitRunner("secret", timeout_seconds=30)
+        with (
+            patch.dict(os.environ, {"GIT_TRACE_CURL": "1"}),
+            patch("github_backup.gitops.subprocess.run", return_value=completed) as run,
+        ):
+            runner._run(
+                ["git", "--version"],
+                authenticated_url="https://github.example/owner/repo.git",
+            )
+        environment = run.call_args.kwargs["env"]
+        self.assertNotIn("GIT_TRACE_CURL", environment)
+        self.assertEqual(environment["GIT_CONFIG_VALUE_1"], "false")
 
 
 if __name__ == "__main__":
