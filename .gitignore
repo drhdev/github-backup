@@ -7,8 +7,17 @@ __pycache__/
 .ruff_cache/
 .venv/
 .uv-cache/
+.env
+.env.*
+!.env.example
+*.key
+*.p12
+*.pem
+*.pfx
 build/
 dist/
 htmlcov/
 github-backup.toml
 backups/
+github-backup-release-app.json
+github-backup-app-manifest/

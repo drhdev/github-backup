@@ -24,8 +24,9 @@ In the repository or organization settings, create a GitHub App named for releas
 7. Add the complete PEM private key as the Actions secret `RELEASE_APP_PRIVATE_KEY`.
 8. Delete the downloaded private-key file after storing it in the secret manager.
 
-The workflow requests only the three permissions above when minting its short-lived installation
-token. Rotate the App key according to organizational policy.
+The workflow explicitly binds the short-lived installation token to this repository and requests
+only the three permissions above. Its normal `GITHUB_TOKEN` does not receive the App's issue or
+pull-request write permissions. Rotate the App key according to organizational policy.
 
 ### 2. Configure Actions and package permissions
 

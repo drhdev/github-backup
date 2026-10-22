@@ -20,8 +20,6 @@ jobs:
     timeout-minutes: 10
     permissions:
       contents: write
-      issues: write
-      pull-requests: write
     outputs:
       publish: ${{ steps.target.outputs.publish }}
       tag: ${{ steps.target.outputs.tag }}
@@ -31,13 +29,13 @@ jobs:
         if: github.event_name == 'push'
         shell: bash
         env:
-          RELEASE_APP_CLIENT_ID: ${{ vars.RELEASE_APP_CLIENT_ID }}
-          RELEASE_APP_PRIVATE_KEY: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          RELEASE_APP_CLIENT_ID_CONFIGURED: ${{ vars.RELEASE_APP_CLIENT_ID != '' }}
+          RELEASE_APP_PRIVATE_KEY_CONFIGURED: ${{ secrets.RELEASE_APP_PRIVATE_KEY != '' }}
         run: |
           set -euo pipefail
           missing=()
-          [[ -n "$RELEASE_APP_CLIENT_ID" ]] || missing+=(RELEASE_APP_CLIENT_ID)
-          [[ -n "$RELEASE_APP_PRIVATE_KEY" ]] || missing+=(RELEASE_APP_PRIVATE_KEY)
+          [[ "$RELEASE_APP_CLIENT_ID_CONFIGURED" == "true" ]] || missing+=(RELEASE_APP_CLIENT_ID)
+          [[ "$RELEASE_APP_PRIVATE_KEY_CONFIGURED" == "true" ]] || missing+=(RELEASE_APP_PRIVATE_KEY)
           if (( ${#missing[@]} > 0 )); then
             {
               echo "## Release automation is not configured"
@@ -57,6 +55,8 @@ jobs:
         with:
           client-id: ${{ vars.RELEASE_APP_CLIENT_ID }}
           private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
           permission-contents: write
           permission-issues: write
           permission-pull-requests: write
