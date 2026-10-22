@@ -16,7 +16,7 @@ concurrency:
 
 jobs:
   prepare:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
       contents: write
@@ -27,6 +27,29 @@ jobs:
       tag: ${{ steps.target.outputs.tag }}
       version: ${{ steps.target.outputs.version }}
     steps:
+      - name: Validate release automation configuration
+        if: github.event_name == 'push'
+        shell: bash
+        env:
+          RELEASE_APP_CLIENT_ID: ${{ vars.RELEASE_APP_CLIENT_ID }}
+          RELEASE_APP_PRIVATE_KEY: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          missing=()
+          [[ -n "$RELEASE_APP_CLIENT_ID" ]] || missing+=(RELEASE_APP_CLIENT_ID)
+          [[ -n "$RELEASE_APP_PRIVATE_KEY" ]] || missing+=(RELEASE_APP_PRIVATE_KEY)
+          if (( ${#missing[@]} > 0 )); then
+            {
+              echo "## Release automation is not configured"
+              echo
+              echo "Missing repository configuration: \`${missing[*]}\`."
+              echo "Follow \`docs/RELEASING.md\` to install the least-privilege GitHub App, then rerun this workflow."
+            } >> "$GITHUB_STEP_SUMMARY"
+            printf 'Missing release automation configuration: %s\n' "${missing[*]}" >&2
+            echo "See docs/RELEASING.md for the required GitHub App setup." >&2
+            exit 1
+          fi
+
       - name: Create short-lived release automation token
         if: github.event_name == 'push'
         id: app-token
@@ -98,7 +121,7 @@ jobs:
   python-artifacts:
     needs: prepare
     if: needs.prepare.outputs.publish == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
       contents: read
@@ -176,7 +199,7 @@ jobs:
   container:
     needs: prepare
     if: needs.prepare.outputs.publish == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     permissions:
       contents: read
@@ -250,7 +273,7 @@ jobs:
       needs.prepare.outputs.publish == 'true' &&
       needs.python-artifacts.result == 'success' &&
       needs.container.result == 'success'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
       contents: write
