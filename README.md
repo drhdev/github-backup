@@ -176,6 +176,14 @@ github-backup verify --destination /mnt/backups/github
 
 Global options (`--config`, `--verbose`, `--json-logs`) go **before** the command. Command options (`--destination`, `--scope`, `--include`) go after `run`, `list`, or `check`.
 
+## GitHub App authentication
+
+To back up all current and future repositories across your accounts and organizations,
+use [GitHub App installation authentication](docs/GITHUB_APP.md) and
+[`github-backup.app.example.toml`](github-backup.app.example.toml). Install the App with
+**All repositories** selected on every owner, then list those owners in `github.app_owners`.
+Installation tokens are renewed automatically; set `include_gists = false`.
+
 ## Create a GitHub token
 
 GitHub recommends fine-grained PATs when they support the use case. Prefer a separate read-only backup identity, set an expiration, document ownership, and rotate before expiry. See [GitHub's token guide](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens).

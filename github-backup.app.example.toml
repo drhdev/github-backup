@@ -1,0 +1,13 @@
+# Install the same GitHub App on every listed user/organization with All repositories.
+[backup]
+destination = "/srv/github-backup"
+scope = "accessible"
+include_gists = false
+workers = 2
+mode = "snapshot"
+snapshot_retention = 0
+
+[github]
+app_id = "123456"
+app_private_key = "/etc/github-backup/app-private-key.pem"
+app_owners = ["your-user", "your-organization", "your-second-user"]

@@ -29,6 +29,9 @@ ALL_ADDITIONAL_DATA: tuple[AdditionalData, ...] = (
 class GitHubConfig:
     api_url: str = "https://api.github.com"
     token_env: str = "GITHUB_TOKEN"
+    app_id: str = ""
+    app_private_key: str = ""
+    app_owners: tuple[str, ...] = ()
     api_version: str = "2022-11-28"
     timeout_seconds: float = 30.0
     max_retries: int = 5
@@ -69,6 +72,19 @@ class BackupConfig:
     s3: S3Config = field(default_factory=S3Config)
 
     def validated(self) -> BackupConfig:
+        if self.github.app_id:
+            if not self.github.app_private_key or not self.github.app_owners:
+                raise ConfigurationError(
+                    "App authentication requires app_private_key and app_owners"
+                )
+            if self.include_gists:
+                raise ConfigurationError(
+                    "GitHub Apps cannot back up gists; set include_gists = false"
+                )
+            if self.github.allow_insecure_http:
+                raise ConfigurationError("GitHub App authentication requires HTTPS")
+        elif self.github.app_private_key or self.github.app_owners:
+            raise ConfigurationError("App authentication requires app_id")
         if self.storage not in ("filesystem", "s3"):
             raise ConfigurationError("storage must be 'filesystem' or 's3'")
         if self.scope not in ("accessible", "owned", "organizations"):
@@ -96,8 +112,7 @@ class BackupConfig:
         unknown_data = set(self.additional_data) - set(ALL_ADDITIONAL_DATA)
         if unknown_data:
             raise ConfigurationError(
-                "additional_data contains unsupported values: "
-                + ", ".join(sorted(unknown_data))
+                "additional_data contains unsupported values: " + ", ".join(sorted(unknown_data))
             )
         if self.s3.lock_lease_seconds < 60:
             raise ConfigurationError("s3.lock_lease_seconds must be at least 60")
@@ -174,9 +189,7 @@ def load_config(path: Path | None) -> BackupConfig:
             workers=int(backup.get("workers", 4)),
             git_timeout_seconds=int(backup.get("git_timeout_seconds", 3600)),
             git_max_retries=int(backup.get("git_max_retries", 3)),
-            verify_mirrors=_boolean(
-                backup.get("verify_mirrors", True), "backup.verify_mirrors"
-            ),
+            verify_mirrors=_boolean(backup.get("verify_mirrors", True), "backup.verify_mirrors"),
             lock_timeout_seconds=int(backup.get("lock_timeout_seconds", 0)),
             minimum_free_space_gib=float(backup.get("minimum_free_space_gib", 1.0)),
             allow_insecure_permissions=_boolean(
@@ -186,6 +199,9 @@ def load_config(path: Path | None) -> BackupConfig:
             snapshot_retention=int(backup.get("snapshot_retention", 0)),
             github=GitHubConfig(
                 api_url=str(github.get("api_url", "https://api.github.com")),
+                app_id=str(github.get("app_id", "")),
+                app_private_key=str(github.get("app_private_key", "")),
+                app_owners=_string_tuple(github.get("app_owners"), "github.app_owners"),
                 token_env=str(github.get("token_env", "GITHUB_TOKEN")),
                 api_version=str(github.get("api_version", "2022-11-28")),
                 timeout_seconds=float(github.get("timeout_seconds", 30.0)),
@@ -200,9 +216,7 @@ def load_config(path: Path | None) -> BackupConfig:
                 endpoint_url=_optional_string(s3.get("endpoint_url")),
                 region=_optional_string(s3.get("region")),
                 storage_class=_optional_string(s3.get("storage_class")),
-                server_side_encryption=_optional_string(
-                    s3.get("server_side_encryption", "AES256")
-                ),
+                server_side_encryption=_optional_string(s3.get("server_side_encryption", "AES256")),
                 lock_lease_seconds=int(s3.get("lock_lease_seconds", 900)),
                 allow_insecure_endpoint=_boolean(
                     s3.get("allow_insecure_endpoint", False),
@@ -225,9 +239,7 @@ def _boolean(value: Any, key: str) -> bool:
     return value
 
 
-def _validate_service_url(
-    value: str, *, key: str, allow_insecure: bool, override: str
-) -> None:
+def _validate_service_url(value: str, *, key: str, allow_insecure: bool, override: str) -> None:
     parsed = urlsplit(value)
     scheme = parsed.scheme.casefold()
     if (

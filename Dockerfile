@@ -19,7 +19,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update \
-    && apt-get install --no-install-recommends -y ca-certificates git git-lfs \
+    && apt-get install --no-install-recommends -y ca-certificates git git-lfs openssl \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --gid 10001 ghbackup \
     && useradd --uid 10001 --gid ghbackup --create-home ghbackup

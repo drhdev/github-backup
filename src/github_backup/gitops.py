@@ -19,7 +19,7 @@ from github_backup.errors import GitCommandError
 class GitRunner:
     def __init__(
         self,
-        token: str,
+        token: str | Callable[[str], str],
         *,
         timeout_seconds: int,
         max_retries: int = 3,
@@ -155,6 +155,7 @@ class GitRunner:
             "GIT_TRACE_REDACT",
         ):
             environment.pop(trace_variable, None)
+        token = ""
         encoded_credential: str | None = None
         if authenticated_url is not None:
             parsed = urlsplit(authenticated_url)
@@ -164,9 +165,8 @@ class GitRunner:
                 raise GitCommandError("authenticated Git remotes must use HTTPS")
             if not parsed.hostname:
                 raise GitCommandError(f"unsupported authenticated clone URL: {authenticated_url}")
-            encoded_credential = base64.b64encode(
-                f"x-access-token:{self._token}".encode()
-            ).decode()
+            token = self._token(authenticated_url) if callable(self._token) else self._token
+            encoded_credential = base64.b64encode(f"x-access-token:{token}".encode()).decode()
             hostname = parsed.hostname
             if ":" in hostname:
                 hostname = f"[{hostname}]"
@@ -182,6 +182,10 @@ class GitRunner:
                 }
             )
         for attempt in range(self._max_retries + 1):
+            if authenticated_url is not None and callable(self._token):
+                token = self._token(authenticated_url)
+                encoded_credential = base64.b64encode(f"x-access-token:{token}".encode()).decode()
+                environment["GIT_CONFIG_VALUE_0"] = f"Authorization: Basic {encoded_credential}"
             try:
                 return subprocess.run(
                     arguments,
@@ -202,7 +206,7 @@ class GitRunner:
                 ) from exc
             except subprocess.CalledProcessError as exc:
                 detail = (exc.stderr or exc.stdout or "unknown Git error").strip()
-                detail = detail.replace(self._token, "[REDACTED]")
+                detail = detail.replace(token, "[REDACTED]") if token else detail
                 if encoded_credential is not None:
                     detail = detail.replace(encoded_credential, "[REDACTED]")
                 if retry and attempt < self._max_retries and _retryable_git_error(detail):

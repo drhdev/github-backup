@@ -7,7 +7,7 @@ import hashlib
 import json
 import logging
 import tarfile
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import replace
 from pathlib import Path
 from typing import cast
@@ -218,8 +218,16 @@ def main(argv: Sequence[str] | None = None) -> None:
         if arguments.command == "verify":
             _verify_local(config)
             return
-        token = read_token(config.github)
-        github = GitHubClient(config.github, token)
+        github: GitHubClient
+        token: str | Callable[[str], str]
+        if config.github.app_id:
+            from github_backup.app_auth import AppClient
+
+            github = AppClient(config.github)
+            token = github.git_token
+        else:
+            token = read_token(config.github)
+            github = GitHubClient(config.github, token)
         git = GitRunner(
             token,
             timeout_seconds=config.git_timeout_seconds,
@@ -295,9 +303,7 @@ def _apply_cli_overrides(config: BackupConfig, arguments: argparse.Namespace) ->
     worker_value = cast(int | None, getattr(arguments, "workers", None))
     workers = worker_value if worker_value is not None else config.workers
     git_retries_value = cast(int | None, getattr(arguments, "git_retries", None))
-    git_max_retries = (
-        git_retries_value if git_retries_value is not None else config.git_max_retries
-    )
+    git_max_retries = git_retries_value if git_retries_value is not None else config.git_max_retries
     verify_value = cast(bool | None, getattr(arguments, "verify_mirrors", None))
     verify_mirrors = verify_value if verify_value is not None else config.verify_mirrors
     free_space_value = cast(float | None, getattr(arguments, "minimum_free_space_gib", None))
@@ -333,25 +339,16 @@ def _apply_cli_overrides(config: BackupConfig, arguments: argparse.Namespace) ->
     s3_bucket = cast(str | None, getattr(arguments, "s3_bucket", None)) or config.s3.bucket
     s3_prefix = cast(str | None, getattr(arguments, "s3_prefix", None)) or config.s3.prefix
     s3_endpoint_url = (
-        cast(str | None, getattr(arguments, "s3_endpoint_url", None))
-        or config.s3.endpoint_url
+        cast(str | None, getattr(arguments, "s3_endpoint_url", None)) or config.s3.endpoint_url
     )
     s3_region = cast(str | None, getattr(arguments, "s3_region", None)) or config.s3.region
-    encryption_value = cast(
-        str | None, getattr(arguments, "s3_server_side_encryption", None)
-    )
+    encryption_value = cast(str | None, getattr(arguments, "s3_server_side_encryption", None))
     s3_encryption = (
-        None
-        if encryption_value == "none"
-        else encryption_value or config.s3.server_side_encryption
+        None if encryption_value == "none" else encryption_value or config.s3.server_side_encryption
     )
-    insecure_s3_value = cast(
-        bool | None, getattr(arguments, "allow_insecure_s3_endpoint", None)
-    )
+    insecure_s3_value = cast(bool | None, getattr(arguments, "allow_insecure_s3_endpoint", None))
     allow_insecure_s3_endpoint = (
-        insecure_s3_value
-        if insecure_s3_value is not None
-        else config.s3.allow_insecure_endpoint
+        insecure_s3_value if insecure_s3_value is not None else config.s3.allow_insecure_endpoint
     )
     s3_config = replace(
         config.s3,

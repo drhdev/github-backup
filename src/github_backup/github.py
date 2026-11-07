@@ -26,7 +26,7 @@ class GitHubClient:
     def __init__(
         self,
         config: GitHubConfig,
-        token: str,
+        token: str | Callable[[], str],
         *,
         sleeper: Callable[[float], None] = time.sleep,
         opener: Callable[..., Any] | None = None,
@@ -218,9 +218,8 @@ class GitHubClient:
         url = self._absolute_api_url(path_or_url)
         if _origin(url) != _origin(self._config.api_url):
             raise GitHubAPIError("GitHub pagination attempted to use a different API origin")
-        headers = self._headers("application/vnd.github+json")
         for attempt in range(self._config.max_retries + 1):
-            request = Request(url, headers=headers)
+            request = Request(url, headers=self._headers("application/vnd.github+json"))
             try:
                 with self._open(request, timeout=self._config.timeout_seconds) as response:
                     raw = response.read()
@@ -249,7 +248,7 @@ class GitHubClient:
     def _headers(self, accept: str) -> dict[str, str]:
         return {
             "Accept": accept,
-            "Authorization": f"Bearer {self._token}",
+            "Authorization": f"Bearer {self._token() if callable(self._token) else self._token}",
             "User-Agent": f"github-backup/{__version__}",
             "X-GitHub-Api-Version": self._config.api_version,
         }
