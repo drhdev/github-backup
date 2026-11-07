@@ -5,7 +5,9 @@
 
 Back up the Git code in your personal GitHub accounts and organizations to DigitalOcean
 Spaces, so you can recover when GitHub is unavailable or an account is compromised.
-**The default installation is Docker Compose deployed through Coolify.**
+**The default installation is Docker Compose deployed through Coolify on an Ubuntu 24.04 LTS
+or newer supported Ubuntu server with an x86_64 (Intel/AMD 64-bit) CPU.**
+Compose explicitly builds and runs `linux/amd64`; no Raspberry Pi OS or ARM hardware is required.
 
 Install one GitHub App with **All repositories** on each account and organization. New
 repositories are discovered automatically. The worker checks hourly and uploads a new
@@ -64,8 +66,8 @@ Record the bucket name and its region, e.g. `fra1` (Frankfurt) or `ams3` (Amster
 5. **Disable automatic deployments, preview deployments, and overlapping/rolling replacements.**
    A compromised GitHub account must not be able to deploy replacement worker code with Spaces secrets.
 6. In **Environment Variables**, set the six required values below in the production environment.
-   Make them available at **runtime**, disable **build-time** exposure of credentials, and keep
-   secret values masked. See the [complete deployment guide](docs/COOLIFY.md) for UI details.
+   For the current Compose file, enable **Buildtime and Runtime** on all six required values
+   so Coolify can interpolate Compose during its build command. Keep secret values masked. See the [complete deployment guide](docs/COOLIFY.md) for UI details.
 7. Save and deploy. Do not add a Coolify scheduled task: the container includes its own scheduler.
 
 ### 4. Set the environment
@@ -84,6 +86,32 @@ SPACES_BUCKET=company-files
 `GITHUB_APP_OWNERS` is a comma-separated list of accounts/organizations where the App is installed.
 The Spaces credentials are a Spaces access-key pair, not a DigitalOcean API token.
 `SPACES_BUCKET` is just the bucket name, without a URL or folder.
+
+### Where to find each required value
+
+| Environment variable | Value to enter | Where to find it |
+|---|---|---|
+| `GITHUB_APP_ID` | Numeric App ID | GitHub **Settings → Developer settings → GitHub Apps → your App → General**; copy **App ID**, not Client ID or installation ID |
+| `GITHUB_APP_OWNERS` | User/org login names, comma-separated | The account and organization names in GitHub URLs, e.g. `github.com/alice` and `github.com/example-team`; install the App on each first |
+| `GITHUB_APP_PRIVATE_KEY_BASE64` | Single-line base64 of your downloaded PEM | Your App's **General → Private keys → Generate a private key**, then run the base64 command above locally |
+| `AWS_ACCESS_KEY_ID` | **DigitalOcean Spaces access key ID** | DigitalOcean **Spaces Object Storage → Access Keys → Create Access Key** |
+| `AWS_SECRET_ACCESS_KEY` | **Secret belonging to that same Spaces key** | Copy the secret when creating the Spaces key; if lost, create a replacement pair and update both values |
+| `SPACES_BUCKET` | Existing bucket name, e.g. `company-files` | DigitalOcean **Spaces Object Storage → Buckets**; open the destination bucket |
+
+**Why the `AWS_` names?** Spaces implements the S3 API, and this project uses boto3's standard
+credential environment variables. Put **DigitalOcean** credentials in them: no AWS account,
+AWS IAM key, or AWS bill is involved. `SPACES_BUCKET` and `SPACES_REGION` configure this
+application; they are not credential-provider variable names. Keep the exact names shown—
+renaming them to `SPACES_KEY`/`SPACES_SECRET` is not supported by this configuration.
+See [DigitalOcean's S3 SDK guide](https://docs.digitalocean.com/products/spaces/reference/aws-sdks/)
+and [Spaces key creation](https://docs.digitalocean.com/products/spaces/how-to/manage-access/).
+
+Use a separate Spaces key for this worker with access to the intended bucket and the required
+read/write/delete operations. Do not paste a DigitalOcean personal API token, the key's display
+name, an endpoint URL, or the GitHub App key into either Spaces credential field.
+For example, the bucket origin `company-files.ams3.digitaloceanspaces.com` means
+`SPACES_BUCKET=company-files` and `SPACES_REGION=ams3`. Keep `SPACES_PREFIX=github-backup`
+unless you want a different folder; that prefix is your choice, not a secret to obtain elsewhere.
 
 Optional values already have working defaults. **Change the region if your bucket is not in Frankfurt:**
 

@@ -1,6 +1,9 @@
 services:
   github-backup:
-    build: .
+    platform: linux/amd64
+    build:
+      context: .
+      platforms: [linux/amd64]
     # Build this checkout; published images before this feature lack the scheduler.
     entrypoint: ["python", "-m", "github_backup.scheduler"]
     command: []

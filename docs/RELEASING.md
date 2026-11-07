@@ -62,7 +62,7 @@ commits, linear history, and successful deployments is an organizational policy 
 The repository is bootstrapped at version `1.1.0`. After this automation is merged to `main`, open
 **Actions > Release > Run workflow**, enter `v1.1.0`, and run it. Manual dispatch will create a
 draft release/tag when absent, build and verify the exact tag, publish Python artifacts and the
-multi-architecture container, and only then publish the GitHub release.
+x86_64 server container, and only then publish the GitHub release.
 
 Do not reuse a version that has already been distributed with different contents. If `1.1.0` was
 published outside this repository, change `pyproject.toml`, `.release-please-manifest.json`, and the
@@ -81,7 +81,7 @@ bootstrap changelog entry to the next unused SemVer before the first workflow di
    vulnerabilities before the container is published.
 7. It generates wheel/sdist artifacts, an SPDX JSON SBOM, `SHA256SUMS`, and GitHub/Sigstore
    provenance attestations.
-8. It builds and publishes `linux/amd64` and `linux/arm64` images with OCI provenance and SBOMs to
+8. It builds and publishes the `linux/amd64` image with OCI provenance and SBOMs to
    `ghcr.io/drhdev/github-backup`.
 9. Only after both artifact jobs succeed does it upload assets and publish the draft release.
 

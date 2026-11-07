@@ -21,7 +21,8 @@ behavior rather than unconditionally reporting a running process as successful.
 
 ## Development setup
 
-Python 3.11 or newer, Git, and Git LFS are required. Docker is required for container changes.
+Python 3.11 or newer, Git, and Git LFS are required. Docker is required for container changes. The production target is Ubuntu 24.04+ x86_64;
+Compose, container CI, and release builds explicitly target `linux/amd64`.
 
 ```bash
 git clone https://github.com/drhdev/github-backup.git
@@ -59,6 +60,20 @@ With `uv`, prefix Python tools with `uv run` and use `uv build` for the package 
 Add tests for changed behavior. Tests must not use a real token or contact a live private resource.
 When a live integration check is necessary, document the isolated test account, permissions, and
 cleanup procedure without disclosing secrets.
+
+## Container and Scorecard CI
+
+Both Docker stages pin the same official Python 3.13 Bookworm image digest. When refreshing
+that pin, inspect `apt` and `libapt-pkg6.0` on the AMD64 deployment target before building: Bookworm
+must contain version 2.6.2 or newer for CVE-2026-109518. Keep the CI/release Trivy High/Critical
+gates enabled; a base digest pin does not by itself mean its OS packages are current.
+
+Scorecard analysis and GitHub SARIF upload are mandatory. Signed publication to the public
+Scorecard service runs afterward, best effort, with one retry. A Sigstore/Rekor outage can
+leave public results stale, but cannot bypass analysis or prevent the already-required
+code-scanning upload. Inspect the publishing steps and rerun the workflow after an outage
+if the public result needs refreshing. Do not treat successful workflow status as proof that
+optional public publication succeeded. The job keeps only Scorecard-approved action steps.
 
 ## Commit and pull-request format
 

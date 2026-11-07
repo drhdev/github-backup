@@ -43,7 +43,7 @@ through the CLI. CLI defaults documented below differ from the scheduled deploym
 - [Requirements](#requirements)
 - [Quick start](#quick-start)
 - [Create a GitHub token](#create-a-github-token)
-- [Install on Debian, Ubuntu, or Raspberry Pi OS](#install-on-debian-ubuntu-or-raspberry-pi-os)
+- [Install on Ubuntu or Debian](#install-on-ubuntu-or-debian)
 - [Run with Docker](#run-with-docker)
 - [Configuration](#configuration)
 - [Storage backends](#storage-backends)
@@ -168,7 +168,7 @@ Runtime choices:
 - CodeQL, dependency review, Dependabot, OpenSSF Scorecard, immutable workflow-action pins, and
   Trivy container gates and automated release provenance provide additional supply-chain controls.
 
-GitHub rate limits and upstream retention still apply. Lower `workers` for slow NAS devices, small Raspberry Pis, or constrained enterprise instances.
+GitHub rate limits and upstream retention still apply. Lower `workers` for slow NAS devices, resource-constrained servers, or constrained enterprise instances.
 
 ## Requirements
 
@@ -265,7 +265,7 @@ sudo chmod 600 /etc/github-backup/environment
 
 For Docker, pass this file with `--env-file`. Never commit a token, store it in TOML, pass it as a command argument, bake it into an image, or paste it into an issue. Rotate immediately after suspected exposure.
 
-## Install on Debian, Ubuntu, or Raspberry Pi OS
+## Install on Ubuntu or Debian
 
 Install a published version for production instead of an arbitrary `main` revision. The examples
 use `1.1.0`; replace it with the current version shown on the
@@ -312,11 +312,11 @@ sudo install -o root -g github-backup -m 0640 \
   /opt/github-backup/github-backup.example.toml /etc/github-backup/config.toml
 ```
 
-Set `destination = "/srv/github-backup"` and `cache_dir = "/var/cache/github-backup"` in `/etc/github-backup/config.toml`. On Raspberry Pi, prefer an SSD to an SD card and reduce `workers` to `1` or `2` when resources are constrained.
+Set `destination = "/srv/github-backup"` and `cache_dir = "/var/cache/github-backup"` in `/etc/github-backup/config.toml`. Prefer SSD storage and reduce `workers` to `1` when resources are constrained.
 
 ## Run with Docker
 
-Install Docker using its official [Ubuntu](https://docs.docker.com/engine/install/ubuntu/), [Debian](https://docs.docker.com/engine/install/debian/), or [Raspberry Pi OS](https://docs.docker.com/engine/install/raspberry-pi-os/) guide. A simple distribution-package setup is:
+Install Docker Engine and the Compose plugin using the official [Ubuntu guide](https://docs.docker.com/engine/install/ubuntu/) on your Ubuntu 24.04+ x86_64 server. A simple distribution-package setup is:
 
 ```bash
 sudo apt update
@@ -327,7 +327,7 @@ sudo docker version
 
 The Docker group is root-equivalent; examples use `sudo docker` instead of adding users to it.
 
-For a published release, prefer the signed multi-architecture GHCR image and pin its digest in
+For a published release, prefer the signed x86_64 (`linux/amd64`) GHCR image and pin its digest in
 controlled deployments:
 
 ```bash
@@ -562,7 +562,7 @@ Inspect `coverage.json` in optional archives. `check --include all` checks the c
 
 ## Automate backups with systemd
 
-systemd is recommended on Debian/Ubuntu/Raspberry Pi OS for protected secrets, missed-run recovery, exit monitoring, and journald logs. This example assumes the production paths above.
+systemd is recommended on Ubuntu/Debian servers for protected secrets, missed-run recovery, exit monitoring, and journald logs. This example assumes the production paths above.
 
 Create the service:
 
@@ -781,7 +781,7 @@ is reviewed and merged, the release workflow:
    fixable High/Critical vulnerabilities;
 4. creates wheel and source archives, an SPDX JSON SBOM, and `SHA256SUMS`;
 5. records GitHub/Sigstore provenance attestations;
-6. publishes `linux/amd64` and `linux/arm64` images with OCI provenance and SBOMs to GHCR;
+6. publishes the `linux/amd64` image with OCI provenance and SBOMs to GHCR;
 7. publishes the GitHub release only after every artifact job succeeds.
 
 Verify downloaded files from one release directory:

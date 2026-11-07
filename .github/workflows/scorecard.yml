@@ -27,8 +27,25 @@ jobs:
         with:
           results_file: results.sarif
           results_format: sarif
-          publish_results: true
+          # Analysis and code-scanning ingestion must not depend on Sigstore availability.
+          publish_results: false
       - name: Upload results to code scanning
         uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4
         with:
           sarif_file: results.sarif
+      - name: Publish signed Scorecard results (best effort)
+        id: publish
+        continue-on-error: true
+        uses: ossf/scorecard-action@fa7117db83c52d787ae5a89f350999701505d78e # v2.5.0
+        with:
+          results_file: published-results.sarif
+          results_format: sarif
+          publish_results: true
+      - name: Retry signed Scorecard publishing (best effort)
+        if: steps.publish.outcome == 'failure'
+        continue-on-error: true
+        uses: ossf/scorecard-action@fa7117db83c52d787ae5a89f350999701505d78e # v2.5.0
+        with:
+          results_file: published-results.sarif
+          results_format: sarif
+          publish_results: true

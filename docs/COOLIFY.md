@@ -12,6 +12,32 @@ its Spaces credentials. The worker never checks out or executes code from backed
 For protection against compromise of the backup host/Spaces credentials as well, maintain an
 independent offline or immutable copy; this deployment has delete permission for retention.
 
+## Target server
+
+Deploy on **Ubuntu 24.04 LTS or a newer supported Ubuntu server, x86_64 / AMD64** with
+Docker Engine, the Docker Compose plugin, and Coolify configured on that destination.
+The Compose service fixes both its build target and runtime platform to `linux/amd64`.
+CI builds/scans that platform on Ubuntu 24.04 runners; releases publish the same x86_64 image.
+Raspberry Pi OS and ARM64 are not the deployment targets of this stack.
+
+Confirm the destination server before deployment:
+
+```bash
+uname -m                 # expected: x86_64
+cat /etc/os-release      # Ubuntu 24.04 or a newer supported Ubuntu release
+docker version
+docker compose version
+```
+
+The container intentionally uses a patched, digest-pinned Python 3.13 Debian Bookworm slim
+userspace. It runs on the Ubuntu host through Docker; the image distribution does not need
+to match the host distribution. No Python, Git, or OpenSSL installation is needed directly
+on the host for the backup worker. Select this Ubuntu x86_64 server as the Coolify destination.
+Do not remove the platform setting to build accidentally for an ARM development machine.
+
+References: [Docker Engine on Ubuntu](https://docs.docker.com/engine/install/ubuntu/),
+[Compose platform/build selection](https://docs.docker.com/reference/compose-file/build/).
+
 ## Defaults
 
 | Setting | Default | Purpose |
@@ -67,8 +93,12 @@ Dockerfile from the checked-out source. Keep exactly one replica, disable previe
 instances for this resource, and avoid rolling/parallel deployments against the same prefix.
 
 Open the application's **Environment Variables** in its production environment. Enable
-runtime availability and disable build-time exposure for credentials; the image does not need
-GitHub, Spaces, or Kuma secrets to build. Use Normal view for individual masked/locked secrets.
+**Buildtime and Runtime for all six required values**. The current Compose file uses
+`${NAME:?message}` for them, and Coolify resolves those expressions during `docker compose build`
+as well as startup. Runtime-only values therefore cause the "required variable is missing a value"
+error before the image build starts. This is Compose configuration interpolation, not a backup
+running during the build. Do not add credentials to the Dockerfile or commit them to source.
+Optional Kuma settings can remain runtime-only because their Compose expressions have defaults. Use Normal view for individual masked/locked secrets.
 Developer view accepts `.env` text, but saving that view synchronizes its contents and can remove
 omitted existing entries. Keep environment-value log redaction enabled. Save environment changes
 and redeploy to apply them. See [Coolify's environment variable documentation](https://coolify.io/docs/applications/configuration/environment-variables).
@@ -91,6 +121,53 @@ Exactly six values have no usable default: `GITHUB_APP_ID`, `GITHUB_APP_OWNERS`,
 The values above are placeholders: replace all six. `SPACES_REGION=fra1` works only if your
 bucket is in Frankfurt; change it to the bucket's actual region, e.g. `nyc3` or `ams3`.
 Use only the bucket name in `SPACES_BUCKET`, not an endpoint URL or folder path.
+
+## Find the values: GitHub and DigitalOcean
+
+| Required variable | Source | What to copy |
+|---|---|---|
+| `GITHUB_APP_ID` | GitHub **Settings → Developer settings → GitHub Apps → your backup App → General** | Numeric **App ID**; not Client ID, installation ID, or App name |
+| `GITHUB_APP_OWNERS` | GitHub profile/org URLs for each installation | Login names, e.g. `alice,example-team,alice-work`; no URL prefixes or display names |
+| `GITHUB_APP_PRIVATE_KEY_BASE64` | App **General → Private keys → Generate a private key** | Download the PEM, encode it using the command above, paste the single-line output |
+| `AWS_ACCESS_KEY_ID` | DigitalOcean **Spaces Object Storage → Access Keys → Create Access Key** | Spaces **access key ID**, not the key's friendly name |
+| `AWS_SECRET_ACCESS_KEY` | Same Spaces key-creation result | Matching **secret key**, saved securely at creation; replace the pair if lost |
+| `SPACES_BUCKET` | DigitalOcean **Spaces Object Storage → Buckets → destination bucket** | Bucket name alone; existing shared buckets are supported |
+
+### Why DigitalOcean credentials use AWS-prefixed names
+
+The S3 client is boto3. Its standard credential-provider variables are `AWS_ACCESS_KEY_ID`
+and `AWS_SECRET_ACCESS_KEY`, including when a custom DigitalOcean endpoint is configured.
+**Both values come from DigitalOcean Spaces. You do not need an AWS account or IAM keys.**
+The scheduler sets `https://SPACES_REGION.digitaloceanspaces.com` as the endpoint; it does
+not send these backups to Amazon. `SPACES_BUCKET`, `SPACES_REGION`, and `SPACES_PREFIX` are
+application configuration rather than boto3 credential-provider settings. Preserve the names
+exactly; unsupported aliases such as `SPACES_ACCESS_KEY_ID` will not configure this worker.
+
+### Create the Spaces key pair
+
+Open [DigitalOcean's control panel](https://cloud.digitalocean.com/), select the team owning
+the bucket, then **Spaces Object Storage → Access Keys → Create Access Key**. Give the key
+a recognizable name, select the intended bucket and the required read/write/delete access,
+and retain both the access key ID and its matching secret. Existing bucket policies may
+restrict which key scopes are compatible: follow the [Spaces access guide](https://docs.digitalocean.com/products/spaces/how-to/manage-access/).
+The worker must also be allowed to list objects and read versioning status. Do not grant
+unnecessary access to other applications' buckets merely because they share a team.
+
+Enter the two values in the matching `AWS_...` fields in Coolify. They are different from a
+DigitalOcean personal API token, SSH key, GitHub private key, or the Spaces key's friendly name.
+If the secret was not saved, create a replacement pair, update **both** variables, test a
+successful backup, then retire the old key. Never paste real secrets into a support request.
+
+### Find region and choose the folder
+
+Open the destination bucket in the Spaces control panel. Its region and origin hostname
+identify `SPACES_REGION`: e.g. `company-files.ams3.digitaloceanspaces.com` corresponds to
+`SPACES_BUCKET=company-files` and `SPACES_REGION=ams3`. Use the origin hostname, not a CDN or
+custom-domain hostname. `fra1` is only the default and must be changed if the bucket lives elsewhere.
+`SPACES_PREFIX=github-backup` is a folder name you choose; no additional key or token is needed.
+
+References: [DigitalOcean with S3 SDKs](https://docs.digitalocean.com/products/spaces/reference/aws-sdks/),
+[boto3 credential environment variables](https://docs.aws.amazon.com/boto3/latest/guide/credentials.html).
 
 For example, a bucket named `company-files` in Amsterdam that also stores invoices:
 

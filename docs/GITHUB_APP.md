@@ -52,7 +52,8 @@ base64 < app-private-key.pem | tr -d '\n'
 ```
 
 Set `GITHUB_APP_PRIVATE_KEY_BASE64` to the output in the Coolify application's production
-runtime environment, masked as a secret with build-time exposure disabled. Set the other
+environment, masked as a secret. With the current Compose file it must be available for
+both Buildtime interpolation and Runtime, as explained in [the deployment guide](COOLIFY.md). Set the other
 required environment variables from [the deployment guide](COOLIFY.md). Base64 is an encoding,
 not encryption. The worker decodes it to a mode-0600 file in tmpfs and uses `openssl` to sign
 App JWTs, then obtains and refreshes short-lived installation tokens automatically.
