@@ -8,6 +8,13 @@ This file is maintained by Release Please from Conventional Commits. Do not manu
 release section; describe user-visible changes in commit messages and edit the generated release
 pull request when additional context is useful.
 
+## [1.3.0](https://github.com/drhdev/github-backup/compare/v1.2.0...v1.3.0) (2026-11-07)
+
+
+### Features
+
+* add browser-managed backup connections and repository scopes ([eaa2d96](https://github.com/drhdev/github-backup/commit/eaa2d96498f053d050ee15d55fec47e568e9fd79))
+
 ## [1.2.0](https://github.com/drhdev/github-backup/compare/v1.1.2...v1.2.0) (2026-11-07)
 
 
