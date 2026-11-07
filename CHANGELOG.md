@@ -8,6 +8,25 @@ This file is maintained by Release Please from Conventional Commits. Do not manu
 release section; describe user-visible changes in commit messages and edit the generated release
 pull request when additional context is useful.
 
+## [1.2.0](https://github.com/drhdev/github-backup/compare/v1.1.2...v1.2.0) (2026-11-07)
+
+
+### Features
+
+* add Coolify deployment with versioned Spaces backups and monitoring ([3719df4](https://github.com/drhdev/github-backup/commit/3719df484ed344a56d96bb76461e258797a359fc))
+* support GitHub App backups across accounts and organizations ([ea7c5a0](https://github.com/drhdev/github-backup/commit/ea7c5a0cfe990d04614295b115337fd69b670d06))
+
+
+### Bug Fixes
+
+* patch container base and target Ubuntu amd64 deployments ([145e7b2](https://github.com/drhdev/github-backup/commit/145e7b2f67924a43b41195e17724ee5f47e9fa6c))
+
+
+### Build System
+
+* **deps:** update GitHub Actions dependencies ([#13](https://github.com/drhdev/github-backup/issues/13)) ([4a5eeb8](https://github.com/drhdev/github-backup/commit/4a5eeb8c73e737030d8faae153c22fdb6a6f7da8))
+* **deps:** update Python dependencies and synchronize lockfile ([#11](https://github.com/drhdev/github-backup/issues/11)) ([cdec103](https://github.com/drhdev/github-backup/commit/cdec103d350a18177d330e6364261c7b4eaac377))
+
 ## [1.1.2](https://github.com/drhdev/github-backup/compare/v1.1.1...v1.1.2) (2026-10-22)
 
 ### Security
