@@ -26,7 +26,7 @@ class GitHubClient:
     def __init__(
         self,
         config: GitHubConfig,
-        token: str,
+        token: str | Callable[[], str],
         *,
         sleeper: Callable[[float], None] = time.sleep,
         opener: Callable[..., Any] | None = None,
@@ -124,9 +124,7 @@ class GitHubClient:
         response, location = self._open_api_download(request, url)
         if location is not None:
             redirected = urljoin(url, location)
-            _validate_download_url(
-                redirected, allow_insecure=self._config.allow_insecure_http
-            )
+            _validate_download_url(redirected, allow_insecure=self._config.allow_insecure_http)
             response = self._open_redirected_download(redirected, url)
         if response is None:
             raise AssertionError("download response missing")
@@ -164,9 +162,7 @@ class GitHubClient:
         raise AssertionError("download retry loop exhausted unexpectedly")
 
     def _open_redirected_download(self, redirected: str, source_url: str) -> Any:
-        opener = build_opener(
-            _HTTPSOnlyRedirectHandler(self._config.allow_insecure_http)
-        ).open
+        opener = build_opener(_HTTPSOnlyRedirectHandler(self._config.allow_insecure_http)).open
         request = Request(
             redirected,
             headers={"User-Agent": f"github-backup/{__version__}"},
@@ -214,13 +210,16 @@ class GitHubClient:
                 yield item
             next_url = _next_link(headers.get("Link", ""))
 
-    def _request_json(self, path_or_url: str) -> tuple[Any, Mapping[str, str]]:
+    def _request_json(
+        self, path_or_url: str, *, method: str = "GET", data: bytes | None = None
+    ) -> tuple[Any, Mapping[str, str]]:
         url = self._absolute_api_url(path_or_url)
         if _origin(url) != _origin(self._config.api_url):
             raise GitHubAPIError("GitHub pagination attempted to use a different API origin")
-        headers = self._headers("application/vnd.github+json")
         for attempt in range(self._config.max_retries + 1):
-            request = Request(url, headers=headers)
+            request = Request(
+                url, headers=self._headers("application/vnd.github+json"), method=method, data=data
+            )
             try:
                 with self._open(request, timeout=self._config.timeout_seconds) as response:
                     raw = response.read()
@@ -249,7 +248,7 @@ class GitHubClient:
     def _headers(self, accept: str) -> dict[str, str]:
         return {
             "Accept": accept,
-            "Authorization": f"Bearer {self._token}",
+            "Authorization": f"Bearer {self._token() if callable(self._token) else self._token}",
             "User-Agent": f"github-backup/{__version__}",
             "X-GitHub-Api-Version": self._config.api_version,
         }
@@ -346,9 +345,7 @@ class SameOriginRedirectHandler(HTTPRedirectHandler):
                 headers,
                 file_pointer,
             )
-        return super().redirect_request(
-            request, file_pointer, code, message, headers, new_url
-        )
+        return super().redirect_request(request, file_pointer, code, message, headers, new_url)
 
 
 class _NoRedirectHandler(HTTPRedirectHandler):
@@ -371,9 +368,7 @@ class _HTTPSOnlyRedirectHandler(HTTPRedirectHandler):
         new_url: str,
     ) -> Request | None:
         _validate_download_url(new_url, allow_insecure=self._allow_insecure)
-        return super().redirect_request(
-            request, file_pointer, code, message, headers, new_url
-        )
+        return super().redirect_request(request, file_pointer, code, message, headers, new_url)
 
 
 def _validate_download_url(url: str, *, allow_insecure: bool) -> None:

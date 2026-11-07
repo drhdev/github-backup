@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import os
 import tomllib
 from collections.abc import Mapping
@@ -14,7 +15,7 @@ from github_backup.errors import ConfigurationError
 
 StorageKind = Literal["filesystem", "s3"]
 ScopeKind = Literal["accessible", "owned", "organizations"]
-BackupMode = Literal["incremental", "snapshot"]
+BackupMode = Literal["incremental", "snapshot", "versioned"]
 AdditionalData = Literal["wikis", "metadata", "releases", "actions", "lfs"]
 ALL_ADDITIONAL_DATA: tuple[AdditionalData, ...] = (
     "wikis",
@@ -29,6 +30,9 @@ ALL_ADDITIONAL_DATA: tuple[AdditionalData, ...] = (
 class GitHubConfig:
     api_url: str = "https://api.github.com"
     token_env: str = "GITHUB_TOKEN"
+    app_id: str = ""
+    app_private_key: str = ""
+    app_owners: tuple[str, ...] = ()
     api_version: str = "2022-11-28"
     timeout_seconds: float = 30.0
     max_retries: int = 5
@@ -37,6 +41,9 @@ class GitHubConfig:
 
 @dataclass(frozen=True, slots=True)
 class S3Config:
+    max_storage_gib: float = 0
+    distributed_lock: bool = True
+    manifest_retention: int = 0
     bucket: str = ""
     prefix: str = "github-backup"
     endpoint_url: str | None = None
@@ -64,17 +71,50 @@ class BackupConfig:
     lock_timeout_seconds: int = 0
     minimum_free_space_gib: float = 1.0
     allow_insecure_permissions: bool = False
+    version_weekly: int = 0
+    version_monthly: int = 0
+    version_keep_oldest: bool = False
+    version_min_age_days: int = 30
     snapshot_retention: int = 0
     github: GitHubConfig = field(default_factory=GitHubConfig)
     s3: S3Config = field(default_factory=S3Config)
 
     def validated(self) -> BackupConfig:
+        if self.github.app_id:
+            if not self.github.app_private_key or not self.github.app_owners:
+                raise ConfigurationError(
+                    "App authentication requires app_private_key and app_owners"
+                )
+            if self.include_gists:
+                raise ConfigurationError(
+                    "GitHub Apps cannot back up gists; set include_gists = false"
+                )
+            if self.github.allow_insecure_http:
+                raise ConfigurationError("GitHub App authentication requires HTTPS")
+        elif self.github.app_private_key or self.github.app_owners:
+            raise ConfigurationError("App authentication requires app_id")
+        if (
+            not math.isfinite(self.s3.max_storage_gib)
+            or self.s3.max_storage_gib < 0
+            or self.s3.manifest_retention < 0
+        ):
+            raise ConfigurationError("S3 storage budget and manifest retention cannot be negative")
         if self.storage not in ("filesystem", "s3"):
             raise ConfigurationError("storage must be 'filesystem' or 's3'")
         if self.scope not in ("accessible", "owned", "organizations"):
             raise ConfigurationError("scope must be accessible, owned, or organizations")
-        if self.mode not in ("incremental", "snapshot"):
-            raise ConfigurationError("mode must be incremental or snapshot")
+        if self.mode not in ("incremental", "snapshot", "versioned"):
+            raise ConfigurationError("mode must be incremental, snapshot, or versioned")
+        if self.mode == "versioned" and (self.storage != "s3" or self.additional_data):
+            raise ConfigurationError("versioned mode requires S3 and no additional_data")
+        if min(self.version_weekly, self.version_monthly) < 0:
+            raise ConfigurationError("Version retention counts cannot be negative")
+        if self.mode == "versioned":
+            parts = self.s3.prefix.split("/")
+            if not parts or any(not part or part in (".", "..") for part in parts):
+                raise ConfigurationError("versioned mode requires a nonempty, relative S3 prefix")
+        if self.version_min_age_days < 0:
+            raise ConfigurationError("version_min_age_days cannot be negative")
         if self.scope == "organizations" and not self.organizations:
             raise ConfigurationError("scope 'organizations' requires at least one organization")
         if self.storage == "s3" and not self.s3.bucket:
@@ -96,8 +136,7 @@ class BackupConfig:
         unknown_data = set(self.additional_data) - set(ALL_ADDITIONAL_DATA)
         if unknown_data:
             raise ConfigurationError(
-                "additional_data contains unsupported values: "
-                + ", ".join(sorted(unknown_data))
+                "additional_data contains unsupported values: " + ", ".join(sorted(unknown_data))
             )
         if self.s3.lock_lease_seconds < 60:
             raise ConfigurationError("s3.lock_lease_seconds must be at least 60")
@@ -174,18 +213,25 @@ def load_config(path: Path | None) -> BackupConfig:
             workers=int(backup.get("workers", 4)),
             git_timeout_seconds=int(backup.get("git_timeout_seconds", 3600)),
             git_max_retries=int(backup.get("git_max_retries", 3)),
-            verify_mirrors=_boolean(
-                backup.get("verify_mirrors", True), "backup.verify_mirrors"
-            ),
+            verify_mirrors=_boolean(backup.get("verify_mirrors", True), "backup.verify_mirrors"),
             lock_timeout_seconds=int(backup.get("lock_timeout_seconds", 0)),
             minimum_free_space_gib=float(backup.get("minimum_free_space_gib", 1.0)),
             allow_insecure_permissions=_boolean(
                 backup.get("allow_insecure_permissions", False),
                 "backup.allow_insecure_permissions",
             ),
+            version_weekly=int(backup.get("version_weekly", 0)),
+            version_monthly=int(backup.get("version_monthly", 0)),
+            version_keep_oldest=_boolean(
+                backup.get("version_keep_oldest", False), "backup.version_keep_oldest"
+            ),
+            version_min_age_days=int(backup.get("version_min_age_days", 30)),
             snapshot_retention=int(backup.get("snapshot_retention", 0)),
             github=GitHubConfig(
                 api_url=str(github.get("api_url", "https://api.github.com")),
+                app_id=str(github.get("app_id", "")),
+                app_private_key=str(github.get("app_private_key", "")),
+                app_owners=_string_tuple(github.get("app_owners"), "github.app_owners"),
                 token_env=str(github.get("token_env", "GITHUB_TOKEN")),
                 api_version=str(github.get("api_version", "2022-11-28")),
                 timeout_seconds=float(github.get("timeout_seconds", 30.0)),
@@ -195,14 +241,15 @@ def load_config(path: Path | None) -> BackupConfig:
                 ),
             ),
             s3=S3Config(
+                max_storage_gib=float(s3.get("max_storage_gib", 0)),
+                manifest_retention=int(s3.get("manifest_retention", 0)),
+                distributed_lock=_boolean(s3.get("distributed_lock", True), "s3.distributed_lock"),
                 bucket=str(s3.get("bucket", "")),
                 prefix=str(s3.get("prefix", "github-backup")),
                 endpoint_url=_optional_string(s3.get("endpoint_url")),
                 region=_optional_string(s3.get("region")),
                 storage_class=_optional_string(s3.get("storage_class")),
-                server_side_encryption=_optional_string(
-                    s3.get("server_side_encryption", "AES256")
-                ),
+                server_side_encryption=_optional_string(s3.get("server_side_encryption", "AES256")),
                 lock_lease_seconds=int(s3.get("lock_lease_seconds", 900)),
                 allow_insecure_endpoint=_boolean(
                     s3.get("allow_insecure_endpoint", False),
@@ -225,9 +272,7 @@ def _boolean(value: Any, key: str) -> bool:
     return value
 
 
-def _validate_service_url(
-    value: str, *, key: str, allow_insecure: bool, override: str
-) -> None:
+def _validate_service_url(value: str, *, key: str, allow_insecure: bool, override: str) -> None:
     parsed = urlsplit(value)
     scheme = parsed.scheme.casefold()
     if (

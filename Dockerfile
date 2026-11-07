@@ -1,4 +1,4 @@
-FROM python:3.13-slim-bookworm@sha256:a1165e272e578941b84abc79e4ab38a0305cd12803a5c4247979ac7655f4d641 AS builder
+FROM python:3.13-slim-bookworm@sha256:a5a7017efc5969e00ae2b91c8eb0631049a569652aa4ffc4501769049ae45c72 AS builder
 
 ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PIP_NO_CACHE_DIR=1
@@ -11,15 +11,16 @@ RUN uv export --frozen --no-dev --extra s3 --no-emit-project --output-file /tmp/
 COPY src ./src
 RUN python -m pip wheel --no-deps --wheel-dir /wheels .
 
-FROM python:3.13-slim-bookworm@sha256:a1165e272e578941b84abc79e4ab38a0305cd12803a5c4247979ac7655f4d641
+FROM python:3.13-slim-bookworm@sha256:a5a7017efc5969e00ae2b91c8eb0631049a569652aa4ffc4501769049ae45c72
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     GITHUB_BACKUP_DESTINATION=/backups \
     DEBIAN_FRONTEND=noninteractive
 
+RUN mkdir /cache && chown 10001:10001 /cache
 RUN apt-get update \
-    && apt-get install --no-install-recommends -y ca-certificates git git-lfs \
+    && apt-get install --no-install-recommends -y ca-certificates git git-lfs openssl \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --gid 10001 ghbackup \
     && useradd --uid 10001 --gid ghbackup --create-home ghbackup

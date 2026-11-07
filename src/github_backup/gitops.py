@@ -19,7 +19,7 @@ from github_backup.errors import GitCommandError
 class GitRunner:
     def __init__(
         self,
-        token: str,
+        token: str | Callable[[str], str],
         *,
         timeout_seconds: int,
         max_retries: int = 3,
@@ -155,6 +155,7 @@ class GitRunner:
             "GIT_TRACE_REDACT",
         ):
             environment.pop(trace_variable, None)
+        token = ""
         encoded_credential: str | None = None
         if authenticated_url is not None:
             parsed = urlsplit(authenticated_url)
@@ -164,9 +165,8 @@ class GitRunner:
                 raise GitCommandError("authenticated Git remotes must use HTTPS")
             if not parsed.hostname:
                 raise GitCommandError(f"unsupported authenticated clone URL: {authenticated_url}")
-            encoded_credential = base64.b64encode(
-                f"x-access-token:{self._token}".encode()
-            ).decode()
+            token = self._token(authenticated_url) if callable(self._token) else self._token
+            encoded_credential = base64.b64encode(f"x-access-token:{token}".encode()).decode()
             hostname = parsed.hostname
             if ":" in hostname:
                 hostname = f"[{hostname}]"
@@ -181,7 +181,25 @@ class GitRunner:
                     "GIT_CONFIG_VALUE_1": "false",
                 }
             )
+        limits = {
+            "pack.threads": "1",
+            "pack.windowMemory": "16m",
+            "pack.deltaCacheSize": "16m",
+            "core.deltaBaseCacheLimit": "16m",
+            "http.lowSpeedLimit": "1024",
+            "http.lowSpeedTime": "120",
+            "gc.auto": "0",
+        }
+        offset = int(environment.get("GIT_CONFIG_COUNT", "0"))
+        for index, (key, value) in enumerate(limits.items(), offset):
+            environment[f"GIT_CONFIG_KEY_{index}"] = key
+            environment[f"GIT_CONFIG_VALUE_{index}"] = value
+        environment["GIT_CONFIG_COUNT"] = str(offset + len(limits))
         for attempt in range(self._max_retries + 1):
+            if authenticated_url is not None and callable(self._token):
+                token = self._token(authenticated_url)
+                encoded_credential = base64.b64encode(f"x-access-token:{token}".encode()).decode()
+                environment["GIT_CONFIG_VALUE_0"] = f"Authorization: Basic {encoded_credential}"
             try:
                 return subprocess.run(
                     arguments,
@@ -202,7 +220,7 @@ class GitRunner:
                 ) from exc
             except subprocess.CalledProcessError as exc:
                 detail = (exc.stderr or exc.stdout or "unknown Git error").strip()
-                detail = detail.replace(self._token, "[REDACTED]")
+                detail = detail.replace(token, "[REDACTED]") if token else detail
                 if encoded_credential is not None:
                     detail = detail.replace(encoded_credential, "[REDACTED]")
                 if retry and attempt < self._max_retries and _retryable_git_error(detail):
@@ -220,6 +238,8 @@ class GitRunner:
                     ["git", "clone", "--mirror", "--", clone_url, str(temporary)],
                     authenticated_url=self._authenticated_url(clone_url),
                 )
+                if self._verify_mirrors:
+                    self.verify_mirror(temporary)
                 temporary.replace(mirror_path)
                 return
             except GitCommandError as exc:

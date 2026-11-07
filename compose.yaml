@@ -1,0 +1,61 @@
+services:
+  github-backup:
+    platform: linux/amd64
+    build:
+      context: .
+      platforms: [linux/amd64]
+    # Build this checkout; published images before this feature lack the scheduler.
+    entrypoint: ["python", "-m", "github_backup.scheduler"]
+    command: []
+    hostname: github-backup
+    restart: unless-stopped
+    init: true
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    stop_grace_period: 90s
+    pids_limit: 128
+    cpus: "${BACKUP_CPUS:-0.5}"
+    mem_limit: ${BACKUP_MEMORY_LIMIT:-512m}
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m,mode=1777
+    volumes:
+      - backup-cache:/cache
+    environment:
+      GITHUB_APP_ID: ${GITHUB_APP_ID:?Set GitHub App ID}
+      GITHUB_APP_OWNERS: ${GITHUB_APP_OWNERS:?Set comma-separated account and organization names}
+      GITHUB_APP_PRIVATE_KEY_BASE64: ${GITHUB_APP_PRIVATE_KEY_BASE64:?Set base64 PEM private key}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:?Set Spaces key}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:?Set Spaces secret}
+      AWS_EC2_METADATA_DISABLED: "true"
+      SPACES_BUCKET: ${SPACES_BUCKET:?Set Spaces bucket name}
+      SPACES_REGION: ${SPACES_REGION:-fra1}
+      SPACES_PREFIX: ${SPACES_PREFIX:-github-backup}
+      BACKUP_INTERVAL_HOURS: ${BACKUP_INTERVAL_HOURS:-1}
+      BACKUP_RETENTION: ${BACKUP_RETENTION:-3}
+      BACKUP_MAX_STORAGE_GIB: ${BACKUP_MAX_STORAGE_GIB:-100}
+      BACKUP_KEEP_WEEKLY: ${BACKUP_KEEP_WEEKLY:-2}
+      BACKUP_KEEP_MONTHLY: ${BACKUP_KEEP_MONTHLY:-2}
+      BACKUP_KEEP_OLDEST: ${BACKUP_KEEP_OLDEST:-true}
+      BACKUP_MANIFEST_RETENTION: ${BACKUP_MANIFEST_RETENTION:-14}
+      BACKUP_MIN_AGE_DAYS: ${BACKUP_MIN_AGE_DAYS:-0}
+      ACKNOWLEDGED_MISSING_REPOSITORIES: ${ACKNOWLEDGED_MISSING_REPOSITORIES:-}
+      BACKUP_TIMEOUT_HOURS: ${BACKUP_TIMEOUT_HOURS:-12}
+      UPTIME_KUMA_PUSH_URL: ${UPTIME_KUMA_PUSH_URL:-}
+      UPTIME_KUMA_ALLOW_HTTP: ${UPTIME_KUMA_ALLOW_HTTP:-false}
+      UPTIME_KUMA_TIMEOUT_SECONDS: ${UPTIME_KUMA_TIMEOUT_SECONDS:-5}
+      UPTIME_KUMA_MAX_SUCCESS_AGE_HOURS: ${UPTIME_KUMA_MAX_SUCCESS_AGE_HOURS:-0}
+      BACKUP_WORKERS: ${BACKUP_WORKERS:-1}
+    healthcheck:
+      test: ["CMD", "python", "-m", "github_backup.scheduler", "health"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+volumes:
+  backup-cache:

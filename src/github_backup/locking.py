@@ -151,9 +151,7 @@ class S3LeaseLock(AbstractContextManager["S3LeaseLock"]):
                 self._thread.start()
                 return self
             if time.monotonic() >= deadline:
-                raise BackupError(
-                    f"another backup holds s3://{self._bucket}/{self._key}"
-                ) from None
+                raise BackupError(f"another backup holds s3://{self._bucket}/{self._key}") from None
             time.sleep(min(1.0, max(deadline - time.monotonic(), 0.1)))
 
     def __exit__(
@@ -252,3 +250,43 @@ class S3LeaseLock(AbstractContextManager["S3LeaseLock"]):
 def _s3_error_code(error: Exception) -> str:
     response = getattr(error, "response", {})
     return str(response.get("Error", {}).get("Code", ""))
+
+
+class FlockLock(AbstractContextManager["FlockLock"]):
+    """Kernel-released lock for a single-host container volume; survives PID reuse."""
+
+    def __init__(self, path: Path, *, wait_seconds: int = 0) -> None:
+        self.path = path
+        self.wait_seconds = wait_seconds
+        self._fd: int | None = None
+
+    def __enter__(self) -> FlockLock:
+        import fcntl
+
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(self.path, os.O_CREAT | os.O_RDWR, 0o600)
+        deadline = time.monotonic() + self.wait_seconds
+        try:
+            while True:
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    self._fd = fd
+                    return self
+                except BlockingIOError:
+                    if time.monotonic() >= deadline:
+                        raise BackupError("Another backup holds the cache-volume lock") from None
+                    time.sleep(0.25)
+        except BaseException:
+            os.close(fd)
+            raise
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        if self._fd is not None:
+            os.close(self._fd)
+            self._fd = None
+        # Never unlink: contenders must lock the same inode.
