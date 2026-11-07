@@ -8,12 +8,21 @@ This file is maintained by Release Please from Conventional Commits. Do not manu
 release section; describe user-visible changes in commit messages and edit the generated release
 pull request when additional context is useful.
 
-## [1.3.0](https://github.com/drhdev/github-backup/compare/v1.2.0...v1.3.0) (2026-11-07)
+## [1.3.0](https://github.com/drhdev/github-backup/compare/v1.2.0...v1.3.0) (2026-11-08)
 
 
 ### Features
 
 * add browser-managed backup connections and repository scopes ([eaa2d96](https://github.com/drhdev/github-backup/commit/eaa2d96498f053d050ee15d55fec47e568e9fd79))
+
+### Setup and migration
+
+* Create multiple read-only GitHub Apps through the protected browser setup and connect personal or organization accounts without manual PEM handling.
+* Select all repositories, specific repositories, all except selected repositories, or pause each connection. GitHub installation permissions remain the access limit.
+* Configure and test DigitalOcean Spaces in setup; only the setup HTTPS URL and password are required in the environment for new deployments.
+* Preserve existing copies of excluded/paused repositories. Failed connections alert while other connections continue backing up.
+* Existing manual configuration remains supported. New browser connections start paused; select a backup scope before expecting code backups. Saved browser Spaces settings take precedence over legacy Spaces environment settings.
+* See the [Coolify deployment guide](https://github.com/drhdev/github-backup/blob/v1.3.0/docs/COOLIFY.md) and [GitHub App setup guide](https://github.com/drhdev/github-backup/blob/v1.3.0/docs/GITHUB_APP.md).
 
 ## [1.2.0](https://github.com/drhdev/github-backup/compare/v1.1.2...v1.2.0) (2026-11-07)
 
