@@ -1,0 +1,10 @@
+{
+  "Rules": [
+    {
+      "ID": "github-backup-abort-incomplete-multipart",
+      "Status": "Enabled",
+      "Filter": {"Prefix": "github-backup/"},
+      "AbortIncompleteMultipartUpload": {"DaysAfterInitiation": 1}
+    }
+  ]
+}

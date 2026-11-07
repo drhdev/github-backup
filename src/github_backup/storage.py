@@ -8,16 +8,18 @@ import logging
 import os
 import shutil
 import tarfile
+import threading
 import uuid
 from abc import ABC, abstractmethod
 from contextlib import AbstractContextManager, suppress
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 from github_backup.config import BackupConfig, BackupMode
 from github_backup.errors import StorageError
 from github_backup.gitops import GitRunner
-from github_backup.locking import BackupLock, CombinedLock, S3LeaseLock
+from github_backup.locking import BackupLock, CombinedLock, FlockLock, S3LeaseLock
 from github_backup.models import Resource, RunManifest
 from github_backup.security import prepare_private_directory, require_free_space
 
@@ -27,6 +29,8 @@ LOGGER = logging.getLogger(__name__)
 class StorageBackend(ABC):
     def __init__(self, config: BackupConfig) -> None:
         self.config = config
+        self._budget_lock = threading.Lock()
+        self._reserved_bytes: int | None = None
 
     @property
     @abstractmethod
@@ -36,6 +40,9 @@ class StorageBackend(ABC):
     @property
     def lock_path(self) -> Path:
         return self.workspace_root.parent / ".github-backup.lock"
+
+    def reconcile_inventory(self, resources: list[Resource]) -> list[dict[str, Any]]:
+        return []
 
     def mirror_path(self, resource: Resource) -> Path:
         return self.workspace_root / resource.relative_path
@@ -206,6 +213,10 @@ class S3Storage(StorageBackend):
 
     def run_lock(self) -> AbstractContextManager[object]:
         local = BackupLock(self.lock_path, wait_seconds=self.config.lock_timeout_seconds)
+        if not self.config.s3.distributed_lock:
+            return FlockLock(
+                self.lock_path.with_suffix(".flock"), wait_seconds=self.config.lock_timeout_seconds
+            )
         remote = S3LeaseLock(
             self._client,
             bucket=self.config.s3.bucket,
@@ -247,6 +258,7 @@ class S3Storage(StorageBackend):
             _create_snapshot(git, mirror_path, artifact)
             extra_args: dict[str, Any] = self._upload_options()
             extra_args["Metadata"] = {"ref-digest": ref_digest}
+            self._reserve_upload(artifact.stat().st_size)
             self._client.upload_file(
                 str(artifact), self.config.s3.bucket, artifact_key, ExtraArgs=extra_args
             )
@@ -288,39 +300,116 @@ class S3Storage(StorageBackend):
         options: dict[str, Any] = self._upload_options()
         options["Metadata"] = {"sha256": sha256}
         try:
-            self._client.upload_file(
-                str(archive), self.config.s3.bucket, key, ExtraArgs=options
-            )
+            self._reserve_upload(archive.stat().st_size)
+            self._client.upload_file(str(archive), self.config.s3.bucket, key, ExtraArgs=options)
         except Exception as exc:
             raise StorageError(
                 f"failed to upload s3://{self.config.s3.bucket}/{key}: {exc}"
             ) from exc
         return f"s3://{self.config.s3.bucket}/{key}"
 
-    def apply_retention(self, manifest: RunManifest) -> None:
-        if not _retention_enabled(self.config, manifest):
-            return
-        base_prefix = self._key("snapshots") + "/"
-        run_ids: set[str] = set()
+    def _objects(self, prefix: str) -> list[dict[str, Any]]:
+        objects: list[dict[str, Any]] = []
         continuation: str | None = None
         while True:
-            request: dict[str, Any] = {
-                "Bucket": self.config.s3.bucket,
-                "Prefix": base_prefix,
-            }
+            request: dict[str, Any] = {"Bucket": self.config.s3.bucket, "Prefix": prefix}
             if continuation:
                 request["ContinuationToken"] = continuation
             response = self._client.list_objects_v2(**request)
-            for item in response.get("Contents", []):
-                key = str(item["Key"])
-                remainder = key.removeprefix(base_prefix)
-                if "/" in remainder:
-                    run_ids.add(remainder.split("/", 1)[0])
+            objects.extend(response.get("Contents", []))
             if not response.get("IsTruncated"):
-                break
+                return objects
             continuation = str(response["NextContinuationToken"])
-        for run_id in sorted(run_ids)[: -self.config.snapshot_retention]:
-            self._delete_prefix(f"{base_prefix}{run_id}/")
+
+    def _reserve_upload(self, size: int) -> None:
+        """Conservative per-run reservation; never credits overwrites or failed uploads."""
+        budget = self.config.s3.max_storage_gib
+        if not budget:
+            return
+        with self._budget_lock:
+            if self._reserved_bytes is None:
+                versioning = self._client.get_bucket_versioning(Bucket=self.config.s3.bucket)
+                if versioning.get("Status") in ("Enabled", "Suspended"):
+                    raise StorageError(
+                        "Storage budget requires an unversioned bucket; noncurrent versions "
+                        "cannot be bounded by snapshot retention"
+                    )
+                self._reserved_bytes = sum(
+                    int(item["Size"]) for item in self._objects(self._key() + "/")
+                )
+            # Leave control-plane headroom for manifests, metadata, and the lease.
+            if self._reserved_bytes + size > int(budget * 1024**3) - 16 * 1024**2:
+                raise StorageError("S3 storage budget reached; increase budget or review retention")
+            self._reserved_bytes += size
+
+    def apply_retention(self, manifest: RunManifest) -> None:
+        if manifest.mode != "snapshot" or not self.config.snapshot_retention:
+            return
+        base_prefix = self._key("snapshots") + "/"
+        complete: list[str] = []
+        run_ids = sorted(
+            {
+                str(item["Key"]).removeprefix(base_prefix).split("/", 1)[0]
+                for item in self._objects(base_prefix)
+            }
+        )
+        for run_id in run_ids:
+            key = self._key("manifests", f"{run_id}.json")
+            try:
+                response = self._client.get_object(Bucket=self.config.s3.bucket, Key=key)
+                with response["Body"] as body:
+                    data = json.loads(body.read())
+            except Exception as exc:
+                code = str(getattr(exc, "response", {}).get("Error", {}).get("Code", ""))
+                if code not in ("404", "NoSuchKey", "NotFound"):
+                    raise StorageError("Cannot read retention manifest; refusing deletion") from exc
+                data = None
+            successful = (
+                isinstance(data, dict)
+                and data.get("finished_at")
+                and not data.get("fatal_error")
+                and data.get("counts", {}).get("failed") == 0
+                and data.get("counts", {}).get("partial") == 0
+            )
+            if successful:
+                complete.append(run_id)
+            else:
+                # Never treat interrupted runs as complete recovery points.
+                try:
+                    age = (
+                        datetime.now(UTC)
+                        - datetime.strptime(run_id, "%Y%m%dT%H%M%S.%fZ").replace(tzinfo=UTC)
+                    ).total_seconds()
+                except ValueError:
+                    age = 0
+                if run_id == manifest.run_id or age > 172800:
+                    self._delete_prefix(f"{base_prefix}{run_id}/")
+        # Preserve existing complete copies until the new run succeeds.
+        if _retention_enabled(self.config, manifest):
+            for run_id in complete[: -self.config.snapshot_retention]:
+                self._delete_prefix(f"{base_prefix}{run_id}/")
+            complete = complete[-self.config.snapshot_retention :]
+        retention = self.config.s3.manifest_retention
+        if retention:
+            manifest_prefix = self._key("manifests") + "/"
+            keys = sorted(
+                str(item["Key"])
+                for item in self._objects(manifest_prefix)
+                if str(item["Key"]) != manifest_prefix + "latest.json"
+            )
+            for key in keys[:-retention]:
+                if Path(key).stem not in complete:
+                    self._delete_keys([{"Key": key}])
+
+    def _delete_keys(self, keys: list[dict[str, str]]) -> None:
+        prefix = self.config.s3.prefix.strip("/")
+        if not prefix or any(not entry["Key"].startswith(prefix + "/") for entry in keys):
+            raise StorageError("Refusing to delete outside the configured S3 prefix")
+        response = self._client.delete_objects(
+            Bucket=self.config.s3.bucket, Delete={"Objects": keys, "Quiet": True}
+        )
+        if response and response.get("Errors"):
+            raise StorageError("S3 retention deletion failed; check object delete permissions")
 
     def _key(self, *parts: str) -> str:
         return "/".join(part.strip("/") for part in (self.config.s3.prefix, *parts) if part)
@@ -385,10 +474,7 @@ class S3Storage(StorageBackend):
             response = self._client.list_objects_v2(**request)
             keys = [{"Key": str(item["Key"])} for item in response.get("Contents", [])]
             if keys:
-                self._client.delete_objects(
-                    Bucket=self.config.s3.bucket,
-                    Delete={"Objects": keys, "Quiet": True},
-                )
+                self._delete_keys(keys)
             if not response.get("IsTruncated"):
                 break
             continuation = str(response["NextContinuationToken"])
@@ -397,6 +483,10 @@ class S3Storage(StorageBackend):
 def create_storage(config: BackupConfig) -> StorageBackend:
     if config.storage == "filesystem":
         return FilesystemStorage(config)
+    if config.mode == "versioned":
+        from github_backup.versioned import VersionedS3Storage
+
+        return VersionedS3Storage(config)
     return S3Storage(config)
 
 

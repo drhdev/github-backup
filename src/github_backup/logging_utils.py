@@ -34,3 +34,14 @@ def configure_logging(*, verbose: bool, json_logs: bool) -> None:
     root.handlers.clear()
     root.addHandler(handler)
     root.setLevel(logging.DEBUG if verbose else logging.INFO)
+
+
+def emit_event(event: str, **fields: Any) -> None:
+    """Write one flushed JSON event to stdout for Docker's log collector."""
+    print(
+        json.dumps(
+            {"timestamp": datetime.now(UTC).isoformat(), "level": "info", "event": event, **fields},
+            separators=(",", ":"),
+        ),
+        flush=True,
+    )

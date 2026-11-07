@@ -84,6 +84,7 @@ class RunManifest:
     finished_at: str | None = None
     results: list[BackupResult] = field(default_factory=list)
     components: list[ComponentResult] = field(default_factory=list)
+    missing_resources: list[dict[str, Any]] = field(default_factory=list)
     fatal_error: str | None = None
 
     @property
@@ -99,7 +100,8 @@ class RunManifest:
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "schema_version": 2,
+            "schema_version": 3,
+            "missing_resources": self.missing_resources,
             "run_id": self.run_id,
             "user": self.user,
             "storage": self.storage,

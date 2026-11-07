@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, as_completed, wait
 from contextlib import suppress
 from datetime import UTC, datetime
 
@@ -80,34 +80,32 @@ class BackupService:
                     try:
                         user, resources = self.discover()
                         manifest.user = user
+                        manifest.missing_resources = self.storage.reconcile_inventory(resources)
+                        for missing in manifest.missing_resources:
+                            LOGGER.warning(
+                                "Previously backed up repository is unavailable: %s", missing
+                            )
                         with ThreadPoolExecutor(
                             max_workers=self.config.workers, thread_name_prefix="github-backup"
                         ) as executor:
+                            pending = iter(resources)
                             futures = {
-                                executor.submit(self._backup_one, resource, run_id): resource
-                                for resource in resources
+                                executor.submit(self._backup_one, resource, run_id)
+                                for resource in (
+                                    next(pending, None) for _ in range(self.config.workers)
+                                )
+                                if resource is not None
                             }
-                            for future in as_completed(futures):
-                                result = future.result()
-                                manifest.results.append(result)
-                                if result.status == "failed":
-                                    LOGGER.error(
-                                        "Failed %s: %s",
-                                        result.resource.relative_path,
-                                        result.error,
-                                    )
-                                elif result.status == "skipped":
-                                    LOGGER.warning(
-                                        "Skipped %s: %s",
-                                        result.resource.relative_path,
-                                        result.error,
-                                    )
-                                else:
-                                    LOGGER.info(
-                                        "Backed up %s (%s)",
-                                        result.resource.relative_path,
-                                        "changed" if result.changed else "unchanged",
-                                    )
+                            while futures:
+                                done, futures = wait(futures, return_when=FIRST_COMPLETED)
+                                for future in done:
+                                    result = future.result()
+                                    resource = next(pending, None)
+                                    if resource is not None:
+                                        futures.add(
+                                            executor.submit(self._backup_one, resource, run_id)
+                                        )
+                                    self._record_result(manifest, result)
                         self._backup_supplementary_data(resources, run_id, manifest)
                     except BaseException as exc:
                         manifest.fatal_error = f"{type(exc).__name__}: {exc}"
@@ -124,9 +122,7 @@ class BackupService:
                         try:
                             self.storage.apply_retention(manifest)
                         except Exception as exc:
-                            manifest.fatal_error = (
-                                f"retention failed: {type(exc).__name__}: {exc}"
-                            )
+                            manifest.fatal_error = f"retention failed: {type(exc).__name__}: {exc}"
                             manifest_location = self.storage.write_manifest(manifest)
                             raise
                         cleanup_empty_artifact_directories(
@@ -140,6 +136,13 @@ class BackupService:
                         self.storage.write_manifest(manifest)
                 raise
         return manifest, manifest_location
+
+    def _record_result(self, manifest: RunManifest, result: BackupResult) -> None:
+        manifest.results.append(result)
+        if result.status == "failed":
+            LOGGER.error("Failed %s: %s", result.resource.relative_path, result.error)
+        else:
+            LOGGER.info("Backed up %s (%s)", result.resource.relative_path, result.status)
 
     def _backup_one(self, resource: Resource, run_id: str) -> BackupResult:
         started = datetime.now(UTC)
@@ -295,9 +298,7 @@ class BackupService:
 
 def _wiki_resource(repository: Resource) -> Resource:
     base = (
-        repository.clone_url[:-4]
-        if repository.clone_url.endswith(".git")
-        else repository.clone_url
+        repository.clone_url[:-4] if repository.clone_url.endswith(".git") else repository.clone_url
     )
     return Resource(
         kind="wiki",
@@ -311,9 +312,7 @@ def _wiki_resource(repository: Resource) -> Resource:
     )
 
 
-def _skipped_component(
-    repository: Resource, component: str, reason: str
-) -> ComponentResult:
+def _skipped_component(repository: Resource, component: str, reason: str) -> ComponentResult:
     timestamp = datetime.now(UTC).isoformat()
     return ComponentResult(
         repository=f"{repository.owner}/{repository.name}",

@@ -13,7 +13,6 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote, urlsplit
-from urllib.request import Request
 
 from github_backup.config import GitHubConfig, ScopeKind
 from github_backup.errors import ConfigurationError, GitHubAPIError
@@ -107,12 +106,11 @@ class AppClient(GitHubClient):
             url = self._absolute_api_url(
                 f"/app/installations/{self._installations[owner]}/access_tokens"
             )
-            request = Request(
-                url, data=b"{}", headers=self._headers("application/vnd.github+json"), method="POST"
-            )
             try:
-                with self._open(request, timeout=self._config.timeout_seconds) as response:
-                    payload = json.loads(response.read())
+                minter = GitHubClient(
+                    self._config, self._token, opener=self._open, sleeper=self._sleep
+                )
+                payload, _ = minter._request_json(url, method="POST", data=b"{}")
                 token = payload["token"]
                 expires = datetime.fromisoformat(payload["expires_at"].replace("Z", "+00:00"))
                 if (
@@ -152,8 +150,10 @@ class AppClient(GitHubClient):
             raise GitHubAPIError("Request owner is outside configured installations")
         return self._client(owner)
 
-    def _request_json(self, path_or_url: str) -> tuple[Any, Mapping[str, str]]:
-        return self._owner_client(path_or_url)._request_json(path_or_url)
+    def _request_json(
+        self, path_or_url: str, *, method: str = "GET", data: bytes | None = None
+    ) -> tuple[Any, Mapping[str, str]]:
+        return self._owner_client(path_or_url)._request_json(path_or_url, method=method, data=data)
 
     def download(self, path_or_url: str, destination: Path) -> int:
         return self._owner_client(path_or_url).download(path_or_url, destination)

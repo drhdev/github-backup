@@ -181,6 +181,20 @@ class GitRunner:
                     "GIT_CONFIG_VALUE_1": "false",
                 }
             )
+        limits = {
+            "pack.threads": "1",
+            "pack.windowMemory": "16m",
+            "pack.deltaCacheSize": "16m",
+            "core.deltaBaseCacheLimit": "16m",
+            "http.lowSpeedLimit": "1024",
+            "http.lowSpeedTime": "120",
+            "gc.auto": "0",
+        }
+        offset = int(environment.get("GIT_CONFIG_COUNT", "0"))
+        for index, (key, value) in enumerate(limits.items(), offset):
+            environment[f"GIT_CONFIG_KEY_{index}"] = key
+            environment[f"GIT_CONFIG_VALUE_{index}"] = value
+        environment["GIT_CONFIG_COUNT"] = str(offset + len(limits))
         for attempt in range(self._max_retries + 1):
             if authenticated_url is not None and callable(self._token):
                 token = self._token(authenticated_url)
@@ -224,6 +238,8 @@ class GitRunner:
                     ["git", "clone", "--mirror", "--", clone_url, str(temporary)],
                     authenticated_url=self._authenticated_url(clone_url),
                 )
+                if self._verify_mirrors:
+                    self.verify_mirror(temporary)
                 temporary.replace(mirror_path)
                 return
             except GitCommandError as exc:

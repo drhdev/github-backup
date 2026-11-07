@@ -51,6 +51,7 @@ def test_cached_and_expiring_tokens():
     app = client()
     app._installations["alice"] = 42
     response = Mock()
+    response.headers = {}
     response.read.return_value = json.dumps(
         {"token": "new-secret", "expires_at": (datetime.now(UTC) + timedelta(hours=1)).isoformat()}
     ).encode()

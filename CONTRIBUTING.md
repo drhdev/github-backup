@@ -10,6 +10,15 @@ privilege, predictable recovery, and backward compatibility ahead of convenience
   private repository names, proprietary source, or real backup data in an issue or pull request.
 - Keep pull requests focused. Large behavior changes should describe migration and restore impact.
 
+## Deployment documentation
+
+The README is the primary **Coolify + Docker Compose + GitHub App + Spaces** installation guide.
+Keep `compose.yaml`, `.env.example`, `docs/COOLIFY.md`, and `docs/MONITORING.md` aligned when
+changing environment variables or defaults. Keep CLI/systemd/PAT alternatives in `docs/CLI.md`.
+Container logs must use stdout/stderr; monitoring failure must not interrupt backup persistence,
+and secret Push URLs must never appear in logs. Test actual backup status and missing-heartbeat
+behavior rather than unconditionally reporting a running process as successful.
+
 ## Development setup
 
 Python 3.11 or newer, Git, and Git LFS are required. Docker is required for container changes.

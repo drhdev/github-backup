@@ -188,6 +188,11 @@ class FilesystemStorageTests(unittest.TestCase):
 
 
 class FakeS3Client:
+    def get_object(self, **values: object) -> dict[str, object]:
+        import io
+
+        return {"Body": io.BytesIO(b'{"finished_at":"now","counts":{"failed":0,"partial":0}}')}
+
     def __init__(self, digest: str) -> None:
         self.digest = digest
         self.puts: list[dict[str, object]] = []

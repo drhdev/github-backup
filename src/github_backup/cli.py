@@ -143,7 +143,7 @@ def _add_runtime_options(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument(
         "--mode",
-        choices=("incremental", "snapshot"),
+        choices=("incremental", "snapshot", "versioned"),
         help="backup mode (default: incremental)",
     )
     parser.add_argument(

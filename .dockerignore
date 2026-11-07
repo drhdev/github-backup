@@ -7,3 +7,9 @@ backups
 build
 dist
 tests
+
+.env
+.env.*
+*.pem
+*.key
+.uv-cache

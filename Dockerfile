@@ -18,6 +18,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     GITHUB_BACKUP_DESTINATION=/backups \
     DEBIAN_FRONTEND=noninteractive
 
+RUN mkdir /cache && chown 10001:10001 /cache
 RUN apt-get update \
     && apt-get install --no-install-recommends -y ca-certificates git git-lfs openssl \
     && rm -rf /var/lib/apt/lists/* \
