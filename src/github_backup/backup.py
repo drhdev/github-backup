@@ -80,7 +80,22 @@ class BackupService:
                     try:
                         user, resources = self.discover()
                         manifest.user = user
-                        manifest.missing_resources = self.storage.reconcile_inventory(resources)
+                        manifest.discovery_errors = list(
+                            getattr(self.github, "discovery_errors", [])
+                        )
+                        for error in manifest.discovery_errors:
+                            LOGGER.error("App installation discovery failed: %s", error)
+                        unavailable = self.storage.reconcile_inventory(resources)
+                        manifest.missing_resources = [
+                            item
+                            for item in unavailable
+                            if self.github.backup_enabled(Resource(**item))
+                        ]
+                        manifest.excluded_resources = [
+                            item
+                            for item in unavailable
+                            if not self.github.backup_enabled(Resource(**item))
+                        ]
                         for missing in manifest.missing_resources:
                             LOGGER.warning(
                                 "Previously backed up repository is unavailable: %s", missing

@@ -85,6 +85,8 @@ class RunManifest:
     results: list[BackupResult] = field(default_factory=list)
     components: list[ComponentResult] = field(default_factory=list)
     missing_resources: list[dict[str, Any]] = field(default_factory=list)
+    excluded_resources: list[dict[str, Any]] = field(default_factory=list)
+    discovery_errors: list[dict[str, str]] = field(default_factory=list)
     fatal_error: str | None = None
 
     @property
@@ -102,6 +104,8 @@ class RunManifest:
         return {
             "schema_version": 3,
             "missing_resources": self.missing_resources,
+            "excluded_resources": self.excluded_resources,
+            "discovery_errors": self.discovery_errors,
             "run_id": self.run_id,
             "user": self.user,
             "storage": self.storage,

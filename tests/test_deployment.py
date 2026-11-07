@@ -249,6 +249,7 @@ def test_budget_only_lists_configured_prefix():
 
 
 def test_env_missing_required_value_reports_variable_name(monkeypatch):
-    monkeypatch.delenv("GITHUB_APP_ID", raising=False)
-    with pytest.raises(ValueError, match="GITHUB_APP_ID"):
+    monkeypatch.delenv("AWS_ACCESS_KEY_ID", raising=False)
+    monkeypatch.setenv("SPACES_BUCKET", "backups")
+    with pytest.raises(ValueError, match="AWS_ACCESS_KEY_ID"):
         scheduler.deployment_config()

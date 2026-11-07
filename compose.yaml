@@ -22,13 +22,13 @@ services:
     volumes:
       - backup-cache:/cache
     environment:
-      GITHUB_APP_ID: ${GITHUB_APP_ID:?Set GitHub App ID}
-      GITHUB_APP_OWNERS: ${GITHUB_APP_OWNERS:?Set comma-separated account and organization names}
-      GITHUB_APP_PRIVATE_KEY_BASE64: ${GITHUB_APP_PRIVATE_KEY_BASE64:?Set base64 PEM private key}
-      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:?Set Spaces key}
-      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:?Set Spaces secret}
+      GITHUB_APP_ID: ${GITHUB_APP_ID:-}
+      GITHUB_APP_OWNERS: ${GITHUB_APP_OWNERS:-}
+      GITHUB_APP_PRIVATE_KEY_BASE64: ${GITHUB_APP_PRIVATE_KEY_BASE64:-}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
       AWS_EC2_METADATA_DISABLED: "true"
-      SPACES_BUCKET: ${SPACES_BUCKET:?Set Spaces bucket name}
+      SPACES_BUCKET: ${SPACES_BUCKET:-}
       SPACES_REGION: ${SPACES_REGION:-fra1}
       SPACES_PREFIX: ${SPACES_PREFIX:-github-backup}
       BACKUP_INTERVAL_HOURS: ${BACKUP_INTERVAL_HOURS:-1}
@@ -52,6 +52,42 @@ services:
       timeout: 10s
       retries: 3
       start_period: 60s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+  github-setup:
+    platform: linux/amd64
+    build:
+      context: .
+      platforms: [linux/amd64]
+    entrypoint: ["gunicorn"]
+    command: ["--bind", "0.0.0.0:8080", "--workers", "1", "--threads", "2",
+              "--timeout", "120", "--graceful-timeout", "20",
+              "--worker-tmp-dir", "/tmp", "github_backup.onboarding:application"]
+    restart: unless-stopped
+    init: true
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 32
+    cpus: "0.25"
+    mem_limit: 128m
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m,mode=1777
+    volumes:
+      - backup-cache:/cache
+    expose: ["8080"]
+    environment:
+      GITHUB_SETUP_URL: ${GITHUB_SETUP_URL:-}
+      GITHUB_SETUP_PASSWORD: ${GITHUB_SETUP_PASSWORD:-}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=5)"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
     logging:
       driver: json-file
       options:

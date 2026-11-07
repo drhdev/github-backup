@@ -31,10 +31,14 @@ class GitHubClient:
         sleeper: Callable[[float], None] = time.sleep,
         opener: Callable[..., Any] | None = None,
     ) -> None:
+        self.discovery_errors: list[dict[str, str]] = []
         self._config = config
         self._token = token
         self._sleep = sleeper
         self._open = opener or build_opener(SameOriginRedirectHandler()).open
+
+    def backup_enabled(self, resource: Resource) -> bool:
+        return True
 
     def authenticated_user(self) -> str:
         payload, _ = self._request_json("/user")

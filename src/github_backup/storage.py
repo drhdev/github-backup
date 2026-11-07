@@ -189,6 +189,8 @@ class S3Storage(StorageBackend):
             "s3",
             endpoint_url=config.s3.endpoint_url,
             region_name=config.s3.region,
+            aws_access_key_id=config.s3.access_key_id or None,
+            aws_secret_access_key=config.s3.secret_access_key or None,
             config=Config(
                 retries={"mode": "adaptive", "max_attempts": 10},
                 connect_timeout=30,

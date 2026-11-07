@@ -1,8 +1,8 @@
 # Docker Compose on Coolify with DigitalOcean Spaces
 
 This is the recommended deployment. A background worker backs up all configured GitHub
-App installations to a private Spaces bucket. No domain, HTTP port, or public service
-is needed. The existing CLI and filesystem backends remain available.
+App installations to a private Spaces bucket. A small protected setup service provides
+automated GitHub App registration through an HTTPS domain. The existing CLI and filesystem backends remain available.
 
 Protect Coolify and Spaces with credentials independent of the GitHub accounts being backed up.
 **Disable automatic deployments from GitHub for this backup worker.** Deploy reviewed source
@@ -42,13 +42,14 @@ References: [Docker Engine on Ubuntu](https://docs.docker.com/engine/install/ubu
 
 | Setting | Default | Purpose |
 |---|---|---|
-| Schedule | Immediately on start, then every hour | First backup needs no waiting |
+| Schedule | After GitHub setup, then every hour | Begins within 30 seconds of first account enablement |
 | Recovery points | 3 latest + 2 weekly + 2 monthly + oldest baseline (up to 8 distinct) | Recent code and older safety checkpoints |
 | Missing/deleted repositories | Keep indefinitely; report unavailable IDs | Upstream deletion never propagates |
 | Artifact budget | 100 GiB per prefix | Refuse new artifacts before crossing budget |
 | Run timeout | 12 hours | Stop hung backups and report failure |
 | Workers | 1 | Process repositories sequentially |
-| CPU / memory limits | 0.5 CPU / 512 MiB | Prevent host resource exhaustion |
+| Worker CPU / memory limits | 0.5 CPU / 512 MiB | Prevent host resource exhaustion |
+| Setup CPU / memory limits | 0.25 CPU / 128 MiB | One web worker with two threads; usually idle |
 | Manifest history | 14 recent manifests; independent per-repository catalogs | Bound diagnostic history |
 | Extra service data | Disabled | Predictable scope and size; Git refs/history only |
 | Cache | Persistent named volume | Incremental Git fetches between runs |
@@ -58,168 +59,96 @@ Restarting the service triggers a new run. It never overlaps scheduled jobs; mis
 intervals are skipped. Set BACKUP_INTERVAL_HOURS to a number of hours (minimum 1).
 Do not add a second Coolify scheduled job for this service.
 
-## Set up GitHub and Spaces
+## Deploy and configure through the setup page
 
-1. Follow [GitHub App setup](GITHUB_APP.md). Install the App with **All repositories** on
-   each user and organization, with Contents read permission. Gists require another
-   authentication method and are disabled here.
-2. Use an existing shared **unversioned** Spaces bucket or create one. Keep this backup
-   prefix private; do not enable public access/CDN for it. The bucket may contain other
-   applications’ data outside `SPACES_PREFIX/`; the worker does not touch that data.
-   Use a bucket-scoped Spaces key with Read/Write/Delete objects access, plus the ability
-   to list the bucket and read bucket versioning status. A read-only key cannot rotate backups.
-3. Choose the region slug, e.g. `fra1`, and bucket name. The code uses the origin endpoint
-   `https://fra1.digitaloceanspaces.com`, not the CDN or bucket-prefixed endpoint.
-4. Base64-encode the App PEM as a single line on your own computer:
+The [README installation steps](../README.md#install-with-coolify) are the primary walkthrough.
+Use Docker Compose from Git, Base Directory `/`, Compose Location `/compose.yaml`, one replica
+of each service and the shared persistent `backup-cache` volume. Assign an HTTPS domain to
+`github-setup`, forwarding to container port 8080, with no published host port. If Coolify
+uses a target-port suffix in its domain field, enter `https://github-backup.example.com:8080`;
+the public URL remains `https://github-backup.example.com`. The worker has no domain.
 
-   ```bash
-   base64 < app-private-key.pem | tr -d '\n'
-   ```
-
-   Store this output as a secret. Base64 is an encoding, not encryption. The runtime
-   writes a mode-0600 key into tmpfs and removes its encoded value from child environments.
-
-## Deploy from Git in current Coolify
-
-In the target Coolify project/environment select **+ New**, then choose the Git repository
-(public repository, deploy key, or supported Git App source). For this public source use
-`https://github.com/drhdev/github-backup`. Select the **Docker Compose** build pack / Compose
-build strategy. Set **Base Directory** to `/` and **Docker Compose Location** to `/compose.yaml`
-(the repository-root file), save, and review the parsed Compose content. Leave domains and
-published ports unset: the worker has no inbound HTTP listener. Do not use Docker Compose Empty
-with this file's relative `build: .` alone; the build requires the Git checkout and Dockerfile. Use a branch or reviewed commit containing this feature; old
-published images do not contain the scheduler. The Compose definition builds the
-Dockerfile from the checked-out source. Keep exactly one replica, disable preview
-instances for this resource, and avoid rolling/parallel deployments against the same prefix.
-
-Open the application's **Environment Variables** in its production environment. Enable
-**Buildtime and Runtime for all six required values**. The current Compose file uses
-`${NAME:?message}` for them, and Coolify resolves those expressions during `docker compose build`
-as well as startup. Runtime-only values therefore cause the "required variable is missing a value"
-error before the image build starts. This is Compose configuration interpolation, not a backup
-running during the build. Do not add credentials to the Dockerfile or commit them to source.
-Optional Kuma settings can remain runtime-only because their Compose expressions have defaults. Use Normal view for individual masked/locked secrets.
-Developer view accepts `.env` text, but saving that view synchronizes its contents and can remove
-omitted existing entries. Keep environment-value log redaction enabled. Save environment changes
-and redeploy to apply them. See [Coolify's environment variable documentation](https://coolify.io/docs/applications/configuration/environment-variables).
-
-Set these runtime environment variables; mark keys and secrets as sensitive:
+Only two environment values are required for a new installation:
 
 ```dotenv
-GITHUB_APP_ID=123456
-GITHUB_APP_OWNERS=your-user,your-org,second-user,third-user
-GITHUB_APP_PRIVATE_KEY_BASE64=BASE64_PEM_HERE
-AWS_ACCESS_KEY_ID=SPACES_KEY_HERE
-AWS_SECRET_ACCESS_KEY=SPACES_SECRET_HERE
-SPACES_BUCKET=your-existing-shared-bucket
-SPACES_REGION=fra1
-SPACES_PREFIX=github-backup
+GITHUB_SETUP_URL=https://github-backup.example.com
+GITHUB_SETUP_PASSWORD=REPLACE_WITH_OUTPUT_OF_OPENSSL_RAND_HEX_32
 ```
 
-Exactly six values have no usable default: `GITHUB_APP_ID`, `GITHUB_APP_OWNERS`,
-`GITHUB_APP_PRIVATE_KEY_BASE64`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, and `SPACES_BUCKET`.
-The values above are placeholders: replace all six. `SPACES_REGION=fra1` works only if your
-bucket is in Frankfurt; change it to the bucket's actual region, e.g. `nyc3` or `ams3`.
-Use only the bucket name in `SPACES_BUCKET`, not an endpoint URL or folder path.
+Generate a unique random password with `openssl rand -hex 32` (minimum 24 characters).
+The URL is the exact HTTPS origin without a path or internal target port. Enable Buildtime
+and Runtime on supplied variables for Compose interpolation; keep secrets masked. Save and
+deploy. Do not add a Coolify scheduled task: the worker includes scheduling.
 
-## Find the values: GitHub and DigitalOcean
+Open that URL, log in as **admin**, and fill out DigitalOcean Spaces in the form. Enter the
+bucket name, region slug, root folder (default `github-backup`), Spaces access key ID and
+matching secret. These values are no longer required in environment variables. Find the
+bucket under DigitalOcean **Spaces Object Storage → Buckets**, and create a key under
+**Spaces Object Storage → Access Keys**. This is not a DigitalOcean personal API token.
+For `company-files.ams3.digitaloceanspaces.com`, enter bucket `company-files`, region `ams3`.
+`fra1` is only the initial form default; choose the actual bucket region.
 
-| Required variable | Source | What to copy |
-|---|---|---|
-| `GITHUB_APP_ID` | GitHub **Settings → Developer settings → GitHub Apps → your backup App → General** | Numeric **App ID**; not Client ID, installation ID, or App name |
-| `GITHUB_APP_OWNERS` | GitHub profile/org URLs for each installation | Login names, e.g. `alice,example-team,alice-work`; no URL prefixes or display names |
-| `GITHUB_APP_PRIVATE_KEY_BASE64` | App **General → Private keys → Generate a private key** | Download the PEM, encode it using the command above, paste the single-line output |
-| `AWS_ACCESS_KEY_ID` | DigitalOcean **Spaces Object Storage → Access Keys → Create Access Key** | Spaces **access key ID**, not the key's friendly name |
-| `AWS_SECRET_ACCESS_KEY` | Same Spaces key-creation result | Matching **secret key**, saved securely at creation; replace the pair if lost |
-| `SPACES_BUCKET` | DigitalOcean **Spaces Object Storage → Buckets → destination bucket** | Bucket name alone; existing shared buckets are supported |
+Use an unversioned bucket, a private exclusive prefix, and a key with object read/write/delete,
+bucket listing and versioning-status read access. Shared buckets are supported: other apps'
+prefixes are not counted, listed or deleted. The save action tests one disposable private
+object under `PREFIX/_system/setup-check/`, including read-back and deletion. Failed tests
+preserve the previous saved configuration. An interrupted probe or a key without delete
+permission may leave a tiny object under that setup-check prefix; remove it after fixing
+permissions. The application never changes bucket policies.
 
-### Why DigitalOcean credentials use AWS-prefixed names
+Key inputs are never prefilled or echoed. Leave them blank to keep saved credentials when
+editing other fields. Changing bucket/region/root requires an explicit confirmation; this
+starts a separate archive and budget, leaving the old location intact. The current backup
+finishes with its original configuration; subsequent runs load the new saved configuration.
+Do not reuse or overlap another worker's prefix. The new destination may be empty until the
+next scheduled run; verify its first successful manifest and restore before retiring the old one.
 
-The S3 client is boto3. Its standard credential-provider variables are `AWS_ACCESS_KEY_ID`
-and `AWS_SECRET_ACCESS_KEY`, including when a custom DigitalOcean endpoint is configured.
-**Both values come from DigitalOcean Spaces. You do not need an AWS account or IAM keys.**
-The scheduler sets `https://SPACES_REGION.digitaloceanspaces.com` as the endpoint; it does
-not send these backups to Amazon. `SPACES_BUCKET`, `SPACES_REGION`, and `SPACES_PREFIX` are
-application configuration rather than boto3 credential-provider settings. Preserve the names
-exactly; unsupported aliases such as `SPACES_ACCESS_KEY_ID` will not configure this worker.
+Create one or more GitHub Apps in setup and connect their personal/organization installations.
+Choose each account's repository scope: **all**, **selected**, **all except selected**, or
+**pause**. GitHub may grant the App access to all repositories or only selected ones. The
+backup selection can narrow that access; it cannot widen it. The all/all-except modes require
+GitHub's All repositories grant so future repositories are covered. New connections start
+paused. See [the GitHub setup guide](GITHUB_APP.md) for multiple Apps and accounts.
 
-### Create the Spaces key pair
+Settings are atomically stored in `/cache/github-app/credentials.json`, permissions 0600,
+on the shared volume. Both containers need access to this secret file, which contains App
+keys, account selections and Spaces credentials. Back it up securely and retain ownership
+UID 10001. A single immutable snapshot is used for each backup run; UI edits apply next run.
+Do not run parallel deployments against the same archive.
 
-Open [DigitalOcean's control panel](https://cloud.digitalocean.com/), select the team owning
-the bucket, then **Spaces Object Storage → Access Keys → Create Access Key**. Give the key
-a recognizable name, select the intended bucket and the required read/write/delete access,
-and retain both the access key ID and its matching secret. Existing bucket policies may
-restrict which key scopes are compatible: follow the [Spaces access guide](https://docs.digitalocean.com/products/spaces/how-to/manage-access/).
-The worker must also be allowed to list objects and read versioning status. Do not grant
-unnecessary access to other applications' buckets merely because they share a team.
+While initial setup is incomplete, a live scheduler emits `waiting_for_setup` and reports
+down to Kuma. Docker health confirms that the waiting scheduler is alive, not that backups
+exist. After setup, check `backup_finished`, zero failure/partial counts, the selected repo
+inventory and a restore drill. An all-paused or empty selection backs up no repositories.
+A failing App connection is recorded in `discovery_errors` and makes the run unhealthy;
+other working connections continue backing up. Deliberate exclusions appear separately in
+`excluded_resources`, with their existing archives preserved.
 
-Enter the two values in the matching `AWS_...` fields in Coolify. They are different from a
-DigitalOcean personal API token, SSH key, GitHub private key, or the Spaces key's friendly name.
-If the secret was not saved, create a replacement pair, update **both** variables, test a
-successful backup, then retire the old key. Never paste real secrets into a support request.
+### Optional environment settings and manual compatibility
 
-### Find region and choose the folder
+[.env.example](../.env.example) contains all optional schedule/retention/budget/monitoring
+variables with defaults. The default is hourly checks, one transfer worker, a 100 GiB prefix
+budget and 3 recent + 2 weekly + 2 monthly + oldest baseline retention. At most 8 distinct
+versions remain per active repository with the default zero-day age floor. Paused/excluded
+and missing repositories preserve their existing versions indefinitely and remain in the budget.
 
-Open the destination bucket in the Spaces control panel. Its region and origin hostname
-identify `SPACES_REGION`: e.g. `company-files.ams3.digitaloceanspaces.com` corresponds to
-`SPACES_BUCKET=company-files` and `SPACES_REGION=ams3`. Use the origin hostname, not a CDN or
-custom-domain hostname. `fra1` is only the default and must be changed if the bucket lives elsewhere.
-`SPACES_PREFIX=github-backup` is a folder name you choose; no additional key or token is needed.
+Existing deployments may keep `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `SPACES_BUCKET`,
+`SPACES_REGION` (default `fra1`) and `SPACES_PREFIX` (default `github-backup`). The `AWS_` names
+are boto3's standard credential names and take **DigitalOcean Spaces** values; no AWS account
+is required. Saved browser Spaces settings take precedence. Remove legacy values after
+verifying the saved configuration to avoid ambiguity. If none are configured, the worker
+waits for browser setup; a partially filled legacy configuration fails clearly.
 
-References: [DigitalOcean with S3 SDKs](https://docs.digitalocean.com/products/spaces/reference/aws-sdks/),
-[boto3 credential environment variables](https://docs.aws.amazon.com/boto3/latest/guide/credentials.html).
+Manual single-App configuration remains available through `GITHUB_APP_ID`,
+`GITHUB_APP_OWNERS` and `GITHUB_APP_PRIVATE_KEY_BASE64`. Those values override browser App
+connections. Clear all three to use multiple Apps and repository scopes through setup.
+Manual mode continues requiring All repositories on GitHub. See [manual setup](GITHUB_APP.md#manual-environment-alternative).
 
-For example, a bucket named `company-files` in Amsterdam that also stores invoices:
-
-```dotenv
-GITHUB_APP_ID=123456
-GITHUB_APP_OWNERS=alice,example-team,alice-work
-GITHUB_APP_PRIVATE_KEY_BASE64=REPLACE_WITH_YOUR_SINGLE_LINE_BASE64_PEM
-AWS_ACCESS_KEY_ID=REPLACE_WITH_YOUR_SPACES_ACCESS_KEY
-AWS_SECRET_ACCESS_KEY=REPLACE_WITH_YOUR_SPACES_SECRET
-SPACES_BUCKET=company-files
-SPACES_REGION=ams3
-SPACES_PREFIX=github-backup
-```
-
-This writes under `s3://company-files/github-backup/`; files such as
-`s3://company-files/invoices/2026.pdf` are not listed, counted toward the budget, or deleted.
-Reserve the entire configured root exclusively for this worker. To use another root, set
-`SPACES_PREFIX=backups/github` (no leading/trailing slash, empty components, `.` or `..`).
-Changing it starts a separate archive and budget; the old prefix is left intact. Do not point
-two workers at the same prefix or use overlapping prefixes.
-
-| Optional variable | Default | Meaning |
-|---|---|---|
-| `SPACES_REGION` | `fra1` | Must match your bucket's region |
-| `SPACES_PREFIX` | `github-backup` | Exclusive folder inside a shared bucket |
-| `BACKUP_INTERVAL_HOURS` | `1` | Poll interval; minimum one hour |
-| `BACKUP_RETENTION` | `3` | Most recent changed versions per active repo |
-| `BACKUP_KEEP_WEEKLY` | `2` | Latest version in each of previous two completed UTC calendar weeks |
-| `BACKUP_KEEP_MONTHLY` | `2` | Latest version in each of previous two completed UTC calendar months |
-| `BACKUP_KEEP_OLDEST` | `true` | Pin the first successful version as a baseline |
-| `BACKUP_MIN_AGE_DAYS` | `0` | Optional age floor; enabling it can exceed the count limit |
-| `BACKUP_MANIFEST_RETENTION` | `14` | Recent diagnostic run reports, not code versions |
-| `BACKUP_MAX_STORAGE_GIB` | `100` | Admission budget for this prefix, not the bucket |
-| `BACKUP_WORKERS` | `1` | Parallel repository operations |
-| `BACKUP_TIMEOUT_HOURS` | `12` | Maximum run duration |
-| `BACKUP_CPUS` | `0.5` | Container CPU limit |
-| `BACKUP_MEMORY_LIMIT` | `512m` | Container memory limit; raise for large repos |
-| `ACKNOWLEDGED_MISSING_REPOSITORIES` | empty | Comma-separated IDs for acknowledged unavailable repos |
-| `UPTIME_KUMA_PUSH_URL` | empty (disabled) | Generated secret URL of an optional Kuma Push monitor |
-| `UPTIME_KUMA_ALLOW_HTTP` | `false` | Explicit private-network HTTP opt-in |
-| `UPTIME_KUMA_TIMEOUT_SECONDS` | `5` | Monitoring request timeout, max 30 seconds |
-| `UPTIME_KUMA_MAX_SUCCESS_AGE_HOURS` | `0` | Auto: `2 × BACKUP_INTERVAL_HOURS + 1`; default 3 hours |
-
-Defaults apply when optional entries are absent. Compose also uses them for empty optional
-values; avoid explicitly blank numeric values when launching Python without Compose.
-`AWS_EC2_METADATA_DISABLED=true` is an internal fixed setting: this deployment uses the supplied
-Spaces key rather than EC2 instance credentials.
-
-All optional entries and defaults are in [.env.example](../.env.example). Retention and budget
-must remain positive. No `.env` file needs to be committed. Deploy and inspect logs for
-`backup_finished` with `exit_code: 0`. The first startup may be healthy while that initial
-backup is running; green process health alone does not prove a completed backup.
+The setup password and URL have no safe universal defaults. Optional variables do have
+defaults; keep secrets out of Git/Dockerfiles. Coolify's Developer environment view can
+remove omitted entries when saving; Normal view lets you edit individual masked values.
+Preserve environment log redaction. The compose file builds the checked-out source; use a
+reviewed revision, not automatic GitHub-triggered updates.
 
 ## Logging and optional Uptime Kuma
 
@@ -240,7 +169,7 @@ Compose owns the health check. Failed or partial runs become unhealthy until a s
 run. A dead scheduler heartbeat or an overdue completed backup also becomes unhealthy.
 Configure Coolify's notifications/external monitoring to alert on unhealthy status and
 repeated restarts; Docker does not restart containers just because they are unhealthy.
-Container logs rotate at 3 × 10 MB. The key remains accessible to the container administrator;
+Container logs rotate at 3 × 10 MB. The stored credentials remain accessible to the container administrator;
 protect Coolify, host access, and the underlying secret store.
 
 The volume is initialized by Docker for UID 10001. If replacing it with a host bind mount,
@@ -379,8 +308,9 @@ git -C restored-repository log -1 --oneline
 ```
 
 Repeat restore drills periodically. The CLI's `verify` command verifies filesystem backups;
-it does not download or verify remote Spaces objects. Encryption at rest uses the existing
-S3 AES256 request; configure independent access and retention controls as needed.
+it does not download or verify remote Spaces objects. The Spaces profile does not send an
+AWS-specific AES256 SSE request ([Spaces S3 compatibility](https://docs.digitalocean.com/products/spaces/reference/s3-compatibility/)).
+Configure host encryption and independent storage/access controls for your recovery requirements.
 
 ## Local Compose equivalent
 
@@ -393,7 +323,9 @@ docker compose up -d --build
 docker compose logs -f github-backup
 ```
 
-The environment file and private-key files are excluded from the build context.
+Point the setup domain at a local HTTPS reverse proxy targeting the setup service on port 8080;
+the stack intentionally does not publish host ports. The environment file and private-key
+files are excluded from the build context.
 
 References: [Coolify Compose from Git](https://coolify.io/docs/applications/builds/docker-compose),
 [Coolify application environment variables](https://coolify.io/docs/applications/configuration/environment-variables),

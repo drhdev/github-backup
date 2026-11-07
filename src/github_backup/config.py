@@ -41,6 +41,8 @@ class GitHubConfig:
 
 @dataclass(frozen=True, slots=True)
 class S3Config:
+    access_key_id: str = field(default="", repr=False)
+    secret_access_key: str = field(default="", repr=False)
     max_storage_gib: float = 0
     distributed_lock: bool = True
     manifest_retention: int = 0

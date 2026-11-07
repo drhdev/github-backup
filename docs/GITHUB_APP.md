@@ -1,75 +1,162 @@
-# GitHub App setup for Coolify backups
+# GitHub Apps, accounts and repository scope
 
-The default deployment is [Coolify + Docker Compose + DigitalOcean Spaces](COOLIFY.md).
-The App authenticates read-only backups across explicitly configured user and organization
-accounts. No personal access token or manual installation-token rotation is needed.
+The default [Coolify installation](COOLIFY.md) manages GitHub Apps, account scopes and
+DigitalOcean Spaces in the protected setup page. Environment variables are needed only for
+the setup HTTPS URL/password and optional operational settings. One setup administrator
+can manage multiple personal GitHub accounts and organizations with several independent Apps.
+This is a single-admin backup deployment, not a service with separate tenant accounts.
 
-## Create the App
+## Register Apps and connect installations
 
-1. In GitHub, open **Settings → Developer settings → GitHub Apps → New GitHub App**
-   (or the corresponding organization developer settings).
-2. Choose a unique name and supply the required homepage URL. This is a background backup
-   client: it needs no public callback server. Leave OAuth callback/setup flows unused.
-3. Disable **Active** under webhooks; no push-event receiver is required. The worker polls refs.
-4. Under repository permissions, grant **Contents: Read-only**. Metadata read permission is
-   automatic. Do not grant write, administration, or unrelated organization permissions for
-   the default Git-only profile. Gists are not supported by installation authentication.
-5. If backing up multiple users/organizations, choose **Any account** (a public-installable App).
-   **Only on this account** restricts a private App to the account that owns it. Public
-   installation availability does not publish your private key or back up strangers' accounts:
-   this worker only uses the owners explicitly listed in `GITHUB_APP_OWNERS`.
-6. Create the App and record its **App ID** (not the Client ID, installation ID, or App name).
-7. Generate and securely download a private-key PEM. Keep it outside Git repositories.
+1. Open `GITHUB_SETUP_URL` and log in as **admin** using `GITHUB_SETUP_PASSWORD`.
+2. Click **Connect GitHub / create another App**, then approve creation on GitHub. To own
+   the App under an organization, enter its login in the optional creation field first.
+3. Use that App's **Install App** link. On GitHub choose **All repositories** or **Only select
+   repositories** for the personal account or organization receiving the installation.
+4. Return to setup, enter the installed account's login under the matching App, and click
+   **Verify and connect account**. A new connection starts **paused** to avoid broadening coverage
+   without your selection. Organization policy may require approval by an owner.
+5. Open **Choose repositories / pause backups**, choose a scope and save it.
+6. Repeat App creation for another GitHub account, switching GitHub logins as needed, or
+   install the same App on more accounts/organizations and connect each under that App.
 
-GitHub explains [public/private installation availability](https://docs.github.com/en/apps/creating-github-apps/registering-a-github-app/making-a-github-app-public-or-private).
+Every App requests only repository **Contents: Read-only**, with automatic metadata read
+access, disabled webhooks and no user OAuth authorization. The registration uses GitHub's
+[manifest flow](https://docs.github.com/en/apps/sharing-github-apps/registering-a-github-app-from-a-manifest).
+Its private key is transferred automatically; there is no PEM download or Base64 conversion.
+Apps are publicly installable to support several accounts; installing an App alone does not
+authorize a stranger's account for this worker. Only explicitly connected accounts are used.
 
-## Install on every owner
+Each connection identifies both an App and the personal/organization login. Different Apps
+can serve different accounts or the same account. Overlapping selections form a **union**;
+a repository is backed up once using a matching App's installation token. If one connection
+loses access, other working connections continue backing up. The manifest records
+`discovery_errors`, the run reports failure and monitoring alerts, even if another connection
+covers overlapping repositories. Pause a connection deliberately to stop using it.
 
-Open the App's **Install App** page. Install it separately on each personal account and
-organization you want to back up, selecting **All repositories** each time. If needed, sign
-into your second/third account to approve its installation. Organization policy may require
-an owner's approval. New repositories within an installation are then discovered automatically.
-Membership or collaborator access does not grant the App access to another owner's repositories.
-The backup program rejects selected-repository installations to avoid silently missing future repos.
+## Choose repository scope
 
-Example:
+| Scope in setup | What is backed up | Required GitHub installation access |
+|---|---|---|
+| All | Every current and future repository | All repositories |
+| Only selected | Checked repositories only | All or selected repositories |
+| All except selected | Every current and future repository except checked ones | All repositories |
+| Pause | None from this connection | No API requests are needed for this connection |
+
+The form lists repositories returned by that installation. It cannot grant access beyond
+GitHub's own [installation repository selection](https://docs.github.com/en/apps/using-github-apps/installing-your-own-github-app).
+For minimal access, select repositories on GitHub and use **Only selected** in backup setup.
+For automatic coverage of future repositories, choose All repositories on GitHub and use
+**All** or **All except selected** in backup setup. To add a repository that is not accessible,
+first edit the installation on GitHub, then reload the selection page.
+
+Selections use stable numeric repository IDs, so a rename does not lose the selection.
+Pausing preserves the last saved checkbox selection for later reuse.
+Deleting/recreating a repository with the same name gives it a different ID; explicitly
+select that new repository in Only selected mode. Empty selected lists and paused connections
+create no code backups; verify that your selection contains everything you need.
+
+A previously selected ID that becomes inaccessible stays checked in the form as **Unavailable**.
+It remains expected and raises a missing/inaccessible alert. Uncheck it only to exclude it
+deliberately. A lost GitHub permission is not automatically treated as your decision to exclude.
+An all/all-except installation changed to selected-only fails rather than silently omitting
+future repositories. Suspended or identity-mismatched installations fail closed.
+
+Deliberately excluded or paused repositories keep all existing backups, with no pruning.
+Previously archived excluded repositories appear in manifest `excluded_resources`; expected
+repositories that disappear appear in `missing_resources`. An account served by several Apps
+is excluded only when every applicable connection excludes it. Unknown/removed accounts
+still report missing resources rather than suppressing alerts.
+
+## Configure DigitalOcean Spaces
+
+In the same setup page, enter bucket, region, root folder, access key ID and secret, then
+**Test and save Spaces**. Defaults are region `fra1` and root `github-backup`; select your
+bucket's actual region. Find the key pair under DigitalOcean **Spaces → Access Keys**, and
+bucket/region under **Spaces → Buckets**. Do not use a DigitalOcean personal API token.
+
+The save action checks versioning status, prefix listing, and private object write/read/delete
+using a random disposable object inside `PREFIX/_system/setup-check/`. Use an unversioned
+bucket and a key with those permissions. Failed checks retain the prior settings. Shared
+buckets are supported; the backup root must be exclusive to this deployment. Key fields are
+never echoed and can be left blank to keep saved values. Changing destination requires a
+confirmation and leaves the old archive intact. See [the deployment guide](COOLIFY.md).
+
+Once storage and at least one installation are configured, the worker begins within 30 seconds.
+Changes apply on the next scheduled run without restarting. Each run uses one settings snapshot,
+so an in-flight run finishes using its original destination, App credentials and selections.
+
+## Credential storage and security
+
+Settings are saved atomically with fsync in `/cache/github-app/credentials.json` on the
+persistent `backup-cache` volume. File permissions are **0600**, directory permissions **0700**,
+and ownership is UID 10001. Both containers can read this secret file, which includes App keys,
+scopes and Spaces credentials. Secrets are not encrypted at rest by the application; use
+host/disk encryption and protect host/Coolify access and any volume backups.
+
+App PEMs are materialized in private `/tmp` tmpfs files with separate filenames per App ID.
+Installation tokens are short-lived and not persisted. Unneeded manifest OAuth/webhook
+secrets are discarded. The setup service uses one Gunicorn worker and two threads with
+128 MiB memory; the backup worker remains single-process/single-transfer by default.
+
+Use HTTPS with a valid certificate and an independent random setup password of at least
+24 characters (`openssl rand -hex 32`). Restrict setup ingress at the proxy where practical.
+GitHub callbacks are browser redirects; no webhook receiver or direct GitHub-to-server
+connection is required. Disable request query-string logging at the proxy: callback URLs
+contain single-use conversion codes. Setup access logging is disabled in the container.
+
+Forms require a browser-bound CSRF token. Manifest states expire after an hour and are
+consumed once. Restarting setup expires pending flows, so start again. Failed conversion
+may leave an unused App on GitHub; remove it there before retrying. New Apps are appended;
+a callback cannot overwrite another App's credentials or erase Spaces settings.
+
+## Upgrading and recovery
+
+The previous single-App credential file is recognized and upgraded to the version-2 settings
+structure on the next save. Its owners retain **All** scope to preserve existing coverage.
+New connections default to **Pause**. Existing manual environment deployments continue to
+work; remove all three GitHub App variables to switch to browser-managed multiple Apps.
+Saved browser Spaces settings take precedence over legacy Spaces environment values.
+Verify a successful backup before removing the previous credentials or revoking old Apps.
+
+Keep a secure independent backup of the credential directory. Container recreation preserves
+it; deleting the volume loses both settings and Git cache. Lost credentials require a secure
+restore or new Apps. Existing Spaces bundles and catalogs remain recoverable without GitHub.
+To rotate a stored App key, stop both services, securely update only `pem` in the matching
+`apps` entry (identified by `id`), preserve permissions/ownership, restart, verify a backup,
+and then revoke the old key. Never paste keys into logs or shell history. Spaces keys can
+be replaced and tested through the setup form without echoing the existing keys.
+
+To stop backing up an account, use **Pause**, preserving its archive and explicit intent.
+There is no destructive App/backup delete button. To remove an App deliberately, stop both
+services and carefully edit only its entry in the saved `apps` list, preserving all other
+Apps and `spaces`. Removed accounts may report missing repositories; follow the
+[missing-repository policy](COOLIFY.md#folder-layout-in-a-shared-bucket). Do not delete the
+volume or S3 prefix to reset onboarding.
+
+## Manual environment alternative
+
+For a deployment without a setup domain, keep the URL/password empty and do not route
+traffic to `github-setup`. The original single-App environment configuration remains available:
 
 ```dotenv
 GITHUB_APP_ID=123456
 GITHUB_APP_OWNERS=alice,example-team,alice-work
+GITHUB_APP_PRIVATE_KEY_BASE64=REPLACE_WITH_SINGLE_LINE_BASE64_PEM
+AWS_ACCESS_KEY_ID=REPLACE_WITH_SPACES_ACCESS_KEY
+AWS_SECRET_ACCESS_KEY=REPLACE_WITH_SPACES_SECRET
+SPACES_BUCKET=company-files
+SPACES_REGION=fra1
+SPACES_PREFIX=github-backup
 ```
 
-All three owners must have installed the same App with All repositories. Separate App
-registrations require separate worker deployments with separate, non-overlapping Spaces prefixes.
-A missing, suspended, or revoked installation fails the check while existing backup data stays safe.
+GitHub App environment settings override the saved browser App connections; all three must
+be cleared for browser selection to take effect. Manual mode continues requiring All repositories
+for each owner. Create the App in GitHub Developer settings, grant Contents read-only, disable
+webhooks, choose Any account for several owners and install on every listed account. Copy the
+numeric App ID, download a generated private key and encode with
+`base64 < app-private-key.pem | tr -d '\n'`. Treat the output as a secret; Base64 is not encryption.
 
-## Configure the PEM in Coolify
-
-Encode it on your own computer as one line:
-
-```bash
-base64 < app-private-key.pem | tr -d '\n'
-```
-
-Set `GITHUB_APP_PRIVATE_KEY_BASE64` to the output in the Coolify application's production
-environment, masked as a secret. With the current Compose file it must be available for
-both Buildtime interpolation and Runtime, as explained in [the deployment guide](COOLIFY.md). Set the other
-required environment variables from [the deployment guide](COOLIFY.md). Base64 is an encoding,
-not encryption. The worker decodes it to a mode-0600 file in tmpfs and uses `openssl` to sign
-App JWTs, then obtains and refreshes short-lived installation tokens automatically.
-
-Do not paste the PEM, its encoded form, tokens, or Spaces keys into logs or support requests.
-Protect Coolify independently from the GitHub accounts being backed up and disable automatic
-GitHub-triggered deployments of this worker. Rotate the key by adding a new key in GitHub,
-updating the Coolify runtime secret, redeploying, verifying a successful check, then revoking
-the previous key.
-
-## Alternative manual CLI deployment
-
-For a local filesystem, NAS, Python environment, or systemd setup, use the alternative
-[CLI/install reference](CLI.md) and [`github-backup.app.example.toml`](../github-backup.app.example.toml).
-Set `app_id`, an absolute private-key path (permissions 0600/0400), `app_owners`, and
-`include_gists = false`. These TOML settings are for the CLI; the Coolify scheduler reads
-its environment instead and does not require a mounted TOML config.
-
-Reference: [GitHub installation authentication](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/authenticating-as-a-github-app-installation).
+Legacy `AWS_` variable names are boto3 conventions but take **DigitalOcean Spaces** credentials,
+not AWS keys. They are used only when no browser Spaces configuration exists. See
+[CLI reference](CLI.md) for filesystem/NAS/TOML configurations, which are separate from setup.

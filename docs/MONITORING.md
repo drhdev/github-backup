@@ -1,7 +1,9 @@
 # Docker logging and optional Uptime Kuma
 
 The default installation is [Coolify + Docker Compose](COOLIFY.md). This worker does not
-expose a website or HTTP health endpoint. It needs no domain, inbound port, or Docker socket.
+expose a website or HTTP health endpoint. The separate `github-setup` service has an HTTPS
+domain for onboarding; its `/health` checks only the setup server. Neither health check
+proves that a backup completed. No Docker socket is required.
 
 ## Standard Docker logging
 
@@ -32,7 +34,8 @@ A successful completed check includes events resembling:
 
 No code changes is a successful check, not a failure. A new run report is still saved but
 no duplicate code bundle is uploaded. A nonzero completion code needs investigation:
-partial/failing repositories, unacknowledged missing repositories, authentication/storage
+partial/failing repositories, App installation `discovery_errors`, unacknowledged missing
+repositories, authentication/storage
 errors, or `124` for the scheduler's run timeout. Use the manifest for per-repository details.
 
 ## Built-in Docker/Coolify health
@@ -40,6 +43,10 @@ errors, or `124` for the scheduler's run timeout. Use the manifest for per-repos
 Compose runs `python -m github_backup.scheduler health` every 60 seconds, with three retries.
 It checks the scheduler heartbeat, completion status, and overdue idle checks. A running first
 backup may be healthy before any backup has completed. Health is not proof of restoration.
+While GitHub or Spaces setup is incomplete, a live
+waiting scheduler is healthy, emits `waiting_for_setup`, and reports down to Kuma
+because no successful backup exists. Setup HTTP access logging is disabled to keep
+GitHub conversion codes out of logs; Gunicorn lifecycle/errors go to stderr.
 
 Enable Coolify notifications for unhealthy resources and failed/restarting deployments.
 A stopped process exits and can be restarted by Docker's restart policy. An **unhealthy but

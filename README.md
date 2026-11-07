@@ -9,8 +9,9 @@ Spaces, so you can recover when GitHub is unavailable or an account is compromis
 or newer supported Ubuntu server with an x86_64 (Intel/AMD 64-bit) CPU.**
 Compose explicitly builds and runs `linux/amd64`; no Raspberry Pi OS or ARM hardware is required.
 
-Install one GitHub App with **All repositories** on each account and organization. New
-repositories are discovered automatically. The worker checks hourly and uploads a new
+Connect one or more GitHub Apps to personal accounts and organizations and choose **all**,
+**selected**, or **all except selected** repositories per installation. All modes that cover
+future repositories discover them automatically. The worker checks hourly and uploads a new
 self-contained backup only when Git refs change. It never runs the backed-up code.
 
 ## What you get by default
@@ -31,114 +32,86 @@ issues, Actions artifacts, secrets, or submodule contents from other repositorie
 
 ## Install with Coolify
 
-### 1. Create and install your GitHub App
+### 1. Deploy in Coolify
 
-Follow [GitHub App setup](docs/GITHUB_APP.md): grant repository **Contents: Read-only**
-(Metadata read is automatic), disable webhooks, and install it with **All repositories**
-on each user and organization to back up. Record its **App ID** and download a private-key PEM.
-A personal access token is not required. Being a member of an organization is insufficient:
-the App must be installed on that organization with its approval.
-
-Encode the key as a single line on your own computer:
-
-```bash
-base64 < app-private-key.pem | tr -d '\n'
-```
-
-Treat this output as a secret; base64 is not encryption.
-
-### 2. Prepare DigitalOcean Spaces
-
-Use an existing shared **unversioned** bucket or create one. Keep the backup prefix private.
-Create a Spaces key that can list, read, write, and delete this backup data, and read bucket
-versioning status. The worker does not change bucket policies or other applications' files.
-Record the bucket name and its region, e.g. `fra1` (Frankfurt) or `ams3` (Amsterdam).
-
-### 3. Configure the Coolify application
-
-1. In the target Coolify project/environment, add a resource from this Git repository.
-   For public source, use `https://github.com/drhdev/github-backup`.
-2. Choose the **Docker Compose** build pack / Compose build strategy. Set Base Directory to `/`
-   and Docker Compose Location to `/compose.yaml` (the file at the repository root).
-3. Use a reviewed source revision containing this feature. The Compose file builds the image;
-   old published images do not contain this scheduler. Keep **one replica** and the named cache volume.
-4. Leave domain/port settings empty: this is a background worker with no inbound HTTP listener.
-5. **Disable automatic deployments, preview deployments, and overlapping/rolling replacements.**
-   A compromised GitHub account must not be able to deploy replacement worker code with Spaces secrets.
-6. In **Environment Variables**, set the six required values below in the production environment.
-   For the current Compose file, enable **Buildtime and Runtime** on all six required values
-   so Coolify can interpolate Compose during its build command. Keep secret values masked. See the [complete deployment guide](docs/COOLIFY.md) for UI details.
-7. Save and deploy. Do not add a Coolify scheduled task: the container includes its own scheduler.
-
-### 4. Set the environment
-
-These six values must be supplied; placeholders will not work:
+1. Add `https://github.com/drhdev/github-backup` using the **Docker Compose** build strategy.
+   Set Base Directory to `/` and Docker Compose Location to `/compose.yaml`.
+2. Keep one replica of each service and the persistent `backup-cache` volume.
+3. Assign an **HTTPS domain to `github-setup`, target port 8080**. If Coolify encodes
+   the target port in its domain field, use `https://github-backup.example.com:8080`.
+   The external URL remains `https://github-backup.example.com` on port 443.
+   Leave `github-backup` without a domain or published port.
+4. **Disable automatic deployments, previews, and overlapping/rolling replacements.**
+5. Set just these two required environment variables, keep the password masked, and deploy:
 
 ```dotenv
-GITHUB_APP_ID=123456
-GITHUB_APP_OWNERS=alice,example-team,alice-work
-GITHUB_APP_PRIVATE_KEY_BASE64=REPLACE_WITH_SINGLE_LINE_BASE64_PEM
-AWS_ACCESS_KEY_ID=REPLACE_WITH_SPACES_KEY
-AWS_SECRET_ACCESS_KEY=REPLACE_WITH_SPACES_SECRET
-SPACES_BUCKET=company-files
+GITHUB_SETUP_URL=https://github-backup.example.com
+GITHUB_SETUP_PASSWORD=REPLACE_WITH_OUTPUT_OF_OPENSSL_RAND_HEX_32
 ```
 
-`GITHUB_APP_OWNERS` is a comma-separated list of accounts/organizations where the App is installed.
-The Spaces credentials are a Spaces access-key pair, not a DigitalOcean API token.
-`SPACES_BUCKET` is just the bucket name, without a URL or folder.
+Generate the password with `openssl rand -hex 32`. The URL must be the exact external HTTPS
+origin without a path or internal `:8080` suffix. Enable Buildtime and Runtime for supplied
+values in Coolify. No Spaces credentials, bucket settings, GitHub App IDs or PEMs need to
+be entered in the environment. See [the deployment guide](docs/COOLIFY.md).
 
-### Where to find each required value
+### 2. Configure DigitalOcean Spaces in the setup page
 
-| Environment variable | Value to enter | Where to find it |
-|---|---|---|
-| `GITHUB_APP_ID` | Numeric App ID | GitHub **Settings → Developer settings → GitHub Apps → your App → General**; copy **App ID**, not Client ID or installation ID |
-| `GITHUB_APP_OWNERS` | User/org login names, comma-separated | The account and organization names in GitHub URLs, e.g. `github.com/alice` and `github.com/example-team`; install the App on each first |
-| `GITHUB_APP_PRIVATE_KEY_BASE64` | Single-line base64 of your downloaded PEM | Your App's **General → Private keys → Generate a private key**, then run the base64 command above locally |
-| `AWS_ACCESS_KEY_ID` | **DigitalOcean Spaces access key ID** | DigitalOcean **Spaces Object Storage → Access Keys → Create Access Key** |
-| `AWS_SECRET_ACCESS_KEY` | **Secret belonging to that same Spaces key** | Copy the secret when creating the Spaces key; if lost, create a replacement pair and update both values |
-| `SPACES_BUCKET` | Existing bucket name, e.g. `company-files` | DigitalOcean **Spaces Object Storage → Buckets**; open the destination bucket |
+Open the setup URL and log in as **admin** with your setup password. Enter:
 
-**Why the `AWS_` names?** Spaces implements the S3 API, and this project uses boto3's standard
-credential environment variables. Put **DigitalOcean** credentials in them: no AWS account,
-AWS IAM key, or AWS bill is involved. `SPACES_BUCKET` and `SPACES_REGION` configure this
-application; they are not credential-provider variable names. Keep the exact names shown—
-renaming them to `SPACES_KEY`/`SPACES_SECRET` is not supported by this configuration.
-See [DigitalOcean's S3 SDK guide](https://docs.digitalocean.com/products/spaces/reference/aws-sdks/)
-and [Spaces key creation](https://docs.digitalocean.com/products/spaces/how-to/manage-access/).
+| Setup field | Where to get it |
+|---|---|
+| Bucket name | DigitalOcean **Spaces Object Storage → Buckets**; use a shared unversioned bucket or create one |
+| Region | Bucket origin hostname: `company-files.ams3.digitaloceanspaces.com` means `ams3` |
+| Root folder | Choose an exclusive prefix; default `github-backup` |
+| Access key ID and secret | DigitalOcean **Spaces Object Storage → Access Keys → Create Access Key**; use the Spaces key pair, not a personal API token |
 
-Use a separate Spaces key for this worker with access to the intended bucket and the required
-read/write/delete operations. Do not paste a DigitalOcean personal API token, the key's display
-name, an endpoint URL, or the GitHub App key into either Spaces credential field.
-For example, the bucket origin `company-files.ams3.digitaloceanspaces.com` means
-`SPACES_BUCKET=company-files` and `SPACES_REGION=ams3`. Keep `SPACES_PREFIX=github-backup`
-unless you want a different folder; that prefix is your choice, not a secret to obtain elsewhere.
+Keep the backup prefix private. The Spaces key needs bucket listing and versioning-status
+read access, plus object read/write/delete permissions. Click **Test and save Spaces**.
+The check writes, reads back and deletes a random temporary object inside your prefix.
+Credentials are saved privately on the persistent volume and are never shown in the page.
 
-Optional values already have working defaults. **Change the region if your bucket is not in Frankfurt:**
+### 3. Connect GitHub Apps and choose repositories
 
-```dotenv
-SPACES_REGION=fra1
-SPACES_PREFIX=github-backup
-BACKUP_INTERVAL_HOURS=1
-BACKUP_RETENTION=3
-BACKUP_KEEP_WEEKLY=2
-BACKUP_KEEP_MONTHLY=2
-BACKUP_KEEP_OLDEST=true
-BACKUP_MAX_STORAGE_GIB=100
-```
+Click **Connect GitHub / create another App**, then approve creation on GitHub. Use the
+installation link to install it on a personal account or organization. GitHub lets you grant
+**All repositories** or **Only select repositories**. Return to setup, enter the account's
+login and click **Verify and connect account**, then **Choose repositories / pause backups**.
+New connections start paused until you choose and save a scope:
 
-[`.env.example`](.env.example) lists **every configurable variable and its default**.
-In Coolify, configure these values in the application; do not commit a real `.env` or PEM file.
-For ordinary Docker Compose outside Coolify, copy `.env.example` to `.env`, fill the required
-values, then run `docker compose up -d --build`.
+| Backup scope | Behavior |
+|---|---|
+| All | Back up every repository, including future ones; requires All repositories on GitHub |
+| Only selected | Back up checked repositories; supports GitHub selected-repository installations |
+| All except selected | Back up everything except checked repositories, including future ones; requires All repositories on GitHub |
+| Pause | Create no backups for this account; preserve existing copies |
 
-### 5. Verify the first backup
+Repeat **create another App** for additional GitHub accounts or organizations, switching
+GitHub logins when necessary. You can register an App under an organization by entering
+its login in the optional creation field. One App may also have several installations;
+multiple Apps can cover the same account, with the union of their selections backed up once.
+Organization approval may be required. Every App requests read-only repository Contents
+with automatic metadata access. No PEM download, Base64 conversion or personal token is needed.
 
-Open the Coolify container logs. A completed healthy run emits `backup_finished` with
-`exit_code: 0`. An unchanged repository is still a successful check and does not create a new bundle.
+Once Spaces and at least one installation are configured, the scheduler starts within
+30 seconds. Changes apply on the next scheduled run without restarting containers. Excluded
+repositories keep all existing backups without pruning; selected repositories that become
+inaccessible still alert. Selections use repository IDs, so renames preserve the selection.
+See [GitHub setup and recovery](docs/GITHUB_APP.md).
 
-Check `github-backup/_system/manifests/latest.json` in Spaces: all expected repositories
-should be represented, `missing_resources` empty, and failure/partial counts zero. Download
-a bundle and its repository catalog, verify the SHA-256, then test cloning and `git fsck --full`.
+Optional scheduling, capacity, retention and monitoring settings retain the defaults in
+[.env.example](.env.example). Existing manual environment deployments remain supported;
+saved browser Spaces settings take precedence over their legacy Spaces variables.
+
+### 4. Verify the first backup
+
+Open the Coolify logs. A successful run emits `backup_finished` with `exit_code: 0`.
+Check `github-backup/_system/manifests/latest.json` in Spaces: expected selected repositories
+must be present, `missing_resources` and `discovery_errors` empty, and failure/partial counts zero.
+`excluded_resources` lists previously archived repositories intentionally excluded or paused.
+An unchanged repository is a successful check without a duplicate bundle. An explicitly
+paused/empty selection produces no code backups, even if the check succeeds.
+
+Download a bundle and its catalog, verify SHA-256, then test cloning and `git fsck --full`.
 **A green container alone does not prove recovery works.** See [restore verification](docs/COOLIFY.md#validate-recovery).
 
 ## Storage layout and retention

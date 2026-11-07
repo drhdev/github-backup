@@ -9,6 +9,7 @@ import subprocess
 import threading
 import time
 from collections.abc import Mapping
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -37,7 +38,8 @@ class InstallationClient(GitHubClient):
 
 
 class AppClient(GitHubClient):
-    def __init__(self, config: GitHubConfig) -> None:
+    def __init__(self, config: GitHubConfig, *, require_all: bool = True) -> None:
+        self.require_all = require_all
         super().__init__(config, self._jwt)
         self._app = GitHubClient(config, self._jwt)
         self._lock = threading.RLock()
@@ -88,7 +90,9 @@ class AppClient(GitHubClient):
                 account = installation.get("account", {})
                 if str(account.get("login", "")).casefold() != owner:
                     raise GitHubAPIError("Installation account does not match configured owner")
-                if installation.get("repository_selection") != "all":
+                if installation.get("repository_selection") not in ("all", "selected"):
+                    raise GitHubAPIError("Invalid installation repository selection")
+                if self.require_all and installation.get("repository_selection") != "all":
                     raise GitHubAPIError(f"Install the App on All repositories for {owner}")
                 if installation.get("suspended_at"):
                     raise GitHubAPIError(f"App installation suspended for {owner}")
@@ -169,3 +173,71 @@ class AppClient(GitHubClient):
             raise GitHubAPIError("Git owner is outside configured installations")
         self._client(owner)
         return self._installation_token(owner)
+
+
+@dataclass(frozen=True)
+class RepositoryScope:
+    mode: str = "all"
+    repositories: frozenset[str] = frozenset()
+
+    def includes(self, identifier: str) -> bool:
+        if self.mode == "none":
+            return False
+        if self.mode == "include":
+            return identifier in self.repositories
+        if self.mode == "exclude":
+            return identifier not in self.repositories
+        return True
+
+
+class MultiAppClient(GitHubClient):
+    """Merge App installations while routing Git credentials by discovered repository."""
+
+    def __init__(self, connections: list[tuple[AppClient, str, RepositoryScope]]) -> None:
+        super().__init__(GitHubConfig(), "")
+        self.connections = connections
+        self.routes: dict[str, AppClient] = {}
+
+    def authenticated_user(self) -> str:
+        return ",".join(sorted({owner for _, owner, _ in self.connections}))
+
+    def repositories(self, scope: ScopeKind, organizations: tuple[str, ...]) -> list[Resource]:
+        repos: dict[str, Resource] = {}
+        self.routes.clear()
+        self.discovery_errors.clear()
+        for client, owner, policy in self.connections:
+            if policy.mode == "none":
+                continue
+            try:
+                resources = client.repositories(scope, organizations)
+                if any(repo.owner.casefold() != owner.casefold() for repo in resources):
+                    raise GitHubAPIError("Installation repository owner mismatch")
+            except Exception as exc:
+                # Isolate a broken connection without recording credentials or API payloads.
+                self.discovery_errors.append(
+                    {
+                        "app_id": str(client._config.app_id),
+                        "owner": owner,
+                        "error": f"Installation discovery failed ({type(exc).__name__})",
+                    }
+                )
+                continue
+            for repo in resources:
+                if policy.includes(repo.identifier):
+                    repos[repo.identifier] = repo
+                    self.routes[repo.clone_url] = client
+        return sorted(repos.values(), key=lambda repo: repo.relative_path.casefold())
+
+    def backup_enabled(self, resource: Resource) -> bool:
+        policies = [
+            policy
+            for _, owner, policy in self.connections
+            if owner.casefold() == resource.owner.casefold()
+        ]
+        # Unknown owners still alert: removing a connection must not hide data loss.
+        return not policies or any(policy.includes(resource.identifier) for policy in policies)
+
+    def git_token(self, url: str) -> str:
+        if url not in self.routes:
+            raise GitHubAPIError("Git repository is outside the configured backup selection")
+        return self.routes[url].git_token(url)
