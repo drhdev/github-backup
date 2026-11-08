@@ -8,6 +8,13 @@ This file is maintained by Release Please from Conventional Commits. Do not manu
 release section; describe user-visible changes in commit messages and edit the generated release
 pull request when additional context is useful.
 
+## [1.4.0](https://github.com/drhdev/github-backup/compare/v1.3.0...v1.4.0) (2026-11-08)
+
+
+### Features
+
+* add secure responsive config UI and repository activity ([8131397](https://github.com/drhdev/github-backup/commit/813139770ec4bcedf3fa586293d7b7876e689b84))
+
 ## [1.3.0](https://github.com/drhdev/github-backup/compare/v1.2.0...v1.3.0) (2026-11-08)
 
 
