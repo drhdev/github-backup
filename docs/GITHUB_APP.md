@@ -1,14 +1,15 @@
 # GitHub Apps, accounts and repository scope
 
 The default [Coolify installation](COOLIFY.md) manages GitHub Apps, account scopes and
-DigitalOcean Spaces in the protected setup page. Environment variables are needed only for
-the setup HTTPS URL/password and optional operational settings. One setup administrator
+DigitalOcean Spaces in the protected config page. Environment variables are needed only for
+the config HTTPS URL and optional operational settings. One config administrator
 can manage multiple personal GitHub accounts and organizations with several independent Apps.
 This is a single-admin backup deployment, not a service with separate tenant accounts.
 
 ## Register Apps and connect installations
 
-1. Open `GITHUB_SETUP_URL` and log in as **admin** using `GITHUB_SETUP_PASSWORD`.
+1. Open `GITHUB_CONFIG_URL`, complete one-time registration if needed, and log in with your
+   chosen username/password. See [config account and recovery](#config-account-and-recovery).
 2. Click **Connect GitHub / create another App**, then approve creation on GitHub. To own
    the App under an organization, enter its login in the optional creation field first.
 3. Use that App's **Install App** link. On GitHub choose **All repositories** or **Only select
@@ -70,7 +71,7 @@ still report missing resources rather than suppressing alerts.
 
 ## Configure DigitalOcean Spaces
 
-In the same setup page, enter bucket, region, root folder, access key ID and secret, then
+In the same config page, enter bucket, region, root folder, access key ID and secret, then
 **Test and save Spaces**. Defaults are region `fra1` and root `github-backup`; select your
 bucket's actual region. Find the key pair under DigitalOcean **Spaces → Access Keys**, and
 bucket/region under **Spaces → Buckets**. Do not use a DigitalOcean personal API token.
@@ -96,19 +97,63 @@ host/disk encryption and protect host/Coolify access and any volume backups.
 
 App PEMs are materialized in private `/tmp` tmpfs files with separate filenames per App ID.
 Installation tokens are short-lived and not persisted. Unneeded manifest OAuth/webhook
-secrets are discarded. The setup service uses one Gunicorn worker and two threads with
+secrets are discarded. The config service uses one Gunicorn worker and two threads with
 128 MiB memory; the backup worker remains single-process/single-transfer by default.
 
-Use HTTPS with a valid certificate and an independent random setup password of at least
-24 characters (`openssl rand -hex 32`). Restrict setup ingress at the proxy where practical.
-GitHub callbacks are browser redirects; no webhook receiver or direct GitHub-to-server
-connection is required. Disable request query-string logging at the proxy: callback URLs
-contain single-use conversion codes. Setup access logging is disabled in the container.
+Use HTTPS with a valid certificate. The single config owner registers a username and strong
+password once; no Basic authentication or password environment variable is used. Restrict
+config ingress at the proxy where practical. GitHub callbacks are browser redirects; no webhook
+receiver or direct GitHub-to-server connection is required. Disable query-string and request-body
+logging at the proxy: callbacks contain single-use conversion codes and login bodies contain
+passwords. Config access logging is disabled in the container.
 
 Forms require a browser-bound CSRF token. Manifest states expire after an hour and are
-consumed once. Restarting setup expires pending flows, so start again. Failed conversion
+consumed once. Restarting the config service expires pending flows, so start again. Failed conversion
 may leave an unused App on GitHub; remove it there before retrying. New Apps are appended;
 a callback cannot overwrite another App's credentials or erase Spaces settings.
+
+## Config account and recovery
+
+A fresh deployment shows a registration form. The operator must retrieve its one-time code in
+the `github-config` service Terminal with `python -m github_backup.config_auth registration-code`.
+Choose a username of 3-64 letters/digits/`_.-` and a unique password/passphrase of 16-128
+characters, confirm it and save it securely. The code is not exposed through the page or logs.
+This prevents an internet visitor from claiming a new instance before its operator.
+
+After creation, `/register` is permanently unavailable and the page shows a login form.
+Registration stays closed. To change your username or password, open **Account**, confirm
+your current password, and save. All sessions are revoked; sign in again with the updated
+credentials. There is no account deletion, forgotten-password reset or second registration.
+The obsolete `GITHUB_SETUP_PASSWORD` variable and Basic authentication do not bypass login;
+remove that variable when upgrading. Existing v1.3 settings and archives remain intact while
+the operator claims the upgraded config service through its local registration code.
+
+Only a salted scrypt hash is stored: N=32768, r=8, p=3, 32 MiB working memory, with hashes
+serialized to bound RAM/CPU. This follows [OWASP's scrypt guidance](https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html).
+Five login/registration attempts per minute are allowed across the single-owner deployment;
+a short rate limit never disables existing sessions or backups. Sessions use random tokens,
+only token hashes persist, and cookies are Secure/HttpOnly/SameSite=Lax. Login rotates the
+browser binding, logout revokes the session server-side, and sessions expire after 30 minutes
+idle or 8 hours absolute. Sessions survive config worker restarts; pending GitHub manifest
+flows do not. Restart the GitHub connection flow if your login expires during it.
+
+Authentication lives separately in `/cache/setup-auth/auth.sqlite3` with permissions 0600,
+inside a 0700 directory. `/cache/.setup-owner-deployment` seals the deployment identity outside
+that directory. Keep the entire cache volume private and preserve the auth directory and seal
+together in a protected backup. Missing/corrupt databases, missing seals, and deleted account
+rows fail closed; deleting just authentication files does not reopen registration.
+
+If you forget the password, deploy the service from scratch using a **new persistent volume**,
+register a new owner and reconnect Apps/storage. Preserve the old volume and remote backups
+for recovery; do not delete the S3 prefix. A complete known-good authentication backup may be
+restored by the operator, but it retains the original password rather than resetting it.
+There is no forgotten-password reset or automatic fallback to environment credentials.
+An authenticated owner who knows the current password can change credentials on **Account**.
+
+Optional Kuma Push configuration is also managed in setup. Paste its secret URL, enable
+monitoring and save; the worker reloads changes within 30 seconds. No synthetic up ping is
+sent by the save action: status always reflects actual backup outcomes. Saved choices,
+including explicit disable, override legacy Kuma environment variables.
 
 ## Upgrading and recovery
 
@@ -125,7 +170,7 @@ restore or new Apps. Existing Spaces bundles and catalogs remain recoverable wit
 To rotate a stored App key, stop both services, securely update only `pem` in the matching
 `apps` entry (identified by `id`), preserve permissions/ownership, restart, verify a backup,
 and then revoke the old key. Never paste keys into logs or shell history. Spaces keys can
-be replaced and tested through the setup form without echoing the existing keys.
+be replaced and tested through the config form without echoing the existing keys.
 
 To stop backing up an account, use **Pause**, preserving its archive and explicit intent.
 There is no destructive App/backup delete button. To remove an App deliberately, stop both
@@ -136,8 +181,8 @@ volume or S3 prefix to reset onboarding.
 
 ## Manual environment alternative
 
-For a deployment without a setup domain, keep the URL/password empty and do not route
-traffic to `github-setup`. The original single-App environment configuration remains available:
+For a deployment without a config domain, keep the config URL empty and do not route
+traffic to `github-config`. The original single-App environment configuration remains available:
 
 ```dotenv
 GITHUB_APP_ID=123456

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import time
+from collections.abc import Callable
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, as_completed, wait
 from contextlib import suppress
 from datetime import UTC, datetime
@@ -33,11 +34,14 @@ class BackupService:
         github: GitHubClient,
         git: GitRunner,
         storage: StorageBackend,
+        *,
+        result_callback: Callable[[BackupResult], None] | None = None,
     ) -> None:
         self.config = config
         self.github = github
         self.git = git
         self.storage = storage
+        self.result_callback = result_callback
 
     def discover(self) -> tuple[str, list[Resource]]:
         user = self.github.authenticated_user()
@@ -154,6 +158,13 @@ class BackupService:
 
     def _record_result(self, manifest: RunManifest, result: BackupResult) -> None:
         manifest.results.append(result)
+        if self.result_callback is not None:
+            try:
+                self.result_callback(result)
+            except Exception as exc:
+                LOGGER.warning(
+                    "Local activity history unavailable (%s); backup continues", type(exc).__name__
+                )
         if result.status == "failed":
             LOGGER.error("Failed %s: %s", result.resource.relative_path, result.error)
         else:

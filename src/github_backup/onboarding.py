@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import base64
 import html
 import json
 import logging
@@ -15,6 +14,7 @@ import time
 from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager
 from http.cookies import SimpleCookie
+from importlib.resources import files
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
@@ -22,6 +22,23 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 from github_backup.app_auth import AppClient, MultiAppClient, RepositoryScope
 from github_backup.config import GitHubConfig
+from github_backup.config_ui import (
+    account_page,
+    credentials_page,
+    document,
+    history_page,
+    home_page,
+)
+from github_backup.config_ui import (
+    repository_page as render_repository_page,
+)
+from github_backup.history import recent_backups
+from github_backup.setup_auth import (
+    SESSION_COOKIE,
+    AuthLockedError,
+    AuthRateLimited,
+    AuthStore,
+)
 from github_backup.setup_settings import (
     LOGIN,
     check_spaces,
@@ -45,7 +62,7 @@ def read_credentials() -> dict[str, Any]:
         data = json.loads(CREDENTIALS.read_text())
         return normalize_settings(data)
     except FileNotFoundError as exc:
-        raise SetupRequired("Complete GitHub setup in the protected setup page") from exc
+        raise SetupRequired("Complete GitHub configuration on the config page") from exc
 
 
 def write_credentials(data: dict[str, Any]) -> None:
@@ -123,74 +140,12 @@ def stored_github_client(data: dict[str, Any] | None = None) -> MultiAppClient:
             )
             connections.append((client, owner, policy))
     if not connections:
-        raise SetupRequired("Connect an App installation in setup")
+        raise SetupRequired("Connect an App installation on the config page")
     return MultiAppClient(connections)
 
 
 def stored_github_config(data: dict[str, Any] | None = None) -> GitHubConfig:
     return stored_github_client(data).connections[0][0]._config
-
-
-def hidden(name: str, value: str) -> str:
-    return f'<input type="hidden" name="{name}" value="{html.escape(value, quote=True)}">'
-
-
-def home_page(data: dict[str, Any], browser: str) -> str:
-    csrf = hidden("csrf", browser)
-    spaces = data.get("spaces") or {}
-    body = "<h1>GitHub backup setup</h1><h2>DigitalOcean Spaces</h2>"
-    body += "<p>Credentials saved.</p>" if spaces else "<p>Storage is not configured yet.</p>"
-    body += '<form method="post" action="/spaces">' + csrf
-    for name, label, default in (
-        ("bucket", "Bucket name", ""),
-        ("region", "Region", "fra1"),
-        ("prefix", "Backup root folder", "github-backup"),
-    ):
-        value = html.escape(spaces.get(name, default), quote=True)
-        body += f'<p><label>{label} <input name="{name}" value="{value}" required></label></p>'
-    body += (
-        '<p><label>Spaces access key ID <input name="access_key_id" type="password" '
-        'autocomplete="off"></label></p>'
-        '<p><label>Spaces secret key <input name="secret_access_key" type="password" '
-        'autocomplete="new-password"></label></p>'
-        "<p>Use DigitalOcean Spaces → Access Keys. "
-        "Leave both key fields blank to keep saved keys.</p>"
-        '<p><label><input type="checkbox" name="confirm_destination" value="yes"> '
-        "Confirm a change of bucket, region or root folder; "
-        "existing backups stay in the old location."
-        "</label></p><button>Test and save Spaces</button></form><h2>GitHub Apps</h2>"
-    )
-    for app in data["apps"]:
-        app_id = app["id"]
-        body += (
-            f"<h3>{html.escape(app['slug'])}</h3>"
-            f'<p><a href="https://github.com/apps/{app["slug"]}/installations/new">'
-            "Install App on an account or organization</a></p>"
-        )
-        for owner in app["owners"]:
-            scope = app.get("scopes", {}).get(owner, {"mode": "all"})
-            body += (
-                f"<p>{html.escape(owner)}: {scope['mode']} — "
-                f'<a href="/repositories?app_id={app_id}&amp;owner={owner}">'
-                "Choose repositories / pause backups</a></p>"
-            )
-        body += (
-            '<form method="post" action="/owners">'
-            + csrf
-            + hidden("app_id", app_id)
-            + "<label>Installed account or organization login "
-            '<input name="owner" required maxlength="100"></label> '
-            "<button>Verify and connect account</button></form>"
-        )
-    body += (
-        "<p>New connections start paused. Choose a repository scope to enable backups.</p>"
-        '<form method="post" action="/connect">'
-        + csrf
-        + "<label>Create the App in an organization (optional login) "
-        '<input name="registration_owner" maxlength="100"></label> '
-        "<button>Connect GitHub / create another App</button></form>"
-    )
-    return body
 
 
 def repository_page(app: dict[str, Any], owner: str, browser: str) -> str:
@@ -200,48 +155,9 @@ def repository_page(app: dict[str, Any], owner: str, browser: str) -> str:
         repos = client.repositories("accessible", ())
     if any(repo.owner.casefold() != owner.casefold() for repo in repos):
         raise ValueError("Repository owner mismatch")
-    scope = app.get("scopes", {}).get(owner, {"mode": "all", "repositories": []})
-    selected = set(scope["repositories"])
-    body = (
-        f"<h1>Repositories for {html.escape(owner)}</h1>"
-        "<p>GitHub limits which repositories this App can access. "
-        "All and All except require All repositories in the GitHub installation settings. "
-        "Selected works with either All repositories or Only select repositories on GitHub.</p>"
-        '<form method="post" action="/scope">'
-        + hidden("csrf", browser)
-        + hidden("app_id", app["id"])
-        + hidden("owner", owner)
-    )
-    for mode, label in (
-        ("all", "All repositories (including future ones)"),
-        ("include", "Only selected repositories"),
-        ("exclude", "All except selected repositories (including future ones)"),
-        ("none", "Pause this account"),
-    ):
-        checked = " checked" if scope["mode"] == mode else ""
-        body += (
-            f'<p><label><input type="radio" name="mode" value="{mode}"{checked}> '
-            f"{label}</label></p>"
-        )
-    visible = set()
-    for repo in repos:
-        visible.add(repo.identifier)
-        checked = " checked" if repo.identifier in selected else ""
-        body += (
-            f'<p><label><input type="checkbox" name="repositories" '
-            f'value="{repo.identifier}"{checked}>{html.escape(repo.name)}</label></p>'
-        )
-    for identifier in sorted(selected - visible):
-        body += (
-            f'<p><label><input type="checkbox" name="repositories" '
-            f'value="{identifier}" checked>Unavailable repository ID {identifier}</label></p>'
-        )
-    return body + (
-        "<button>Save backup scope</button></form><p>Excluded or paused repositories "
-        "keep existing backups without pruning. Selected repositories that become "
-        "inaccessible still raise an alert. Uncheck an unavailable ID only to exclude it "
-        'deliberately.</p><a href="/">Back to setup</a>'
-    )
+    if any(not re.fullmatch(r"[0-9]{1,30}", repo.identifier) for repo in repos):
+        raise ValueError("Invalid repository identity")
+    return render_repository_page(app, owner, browser, repos)
 
 
 def save_scope(data: dict[str, Any], form: dict[str, list[str]]) -> None:
@@ -314,6 +230,94 @@ class SetupApplication:
 
     def __init__(self) -> None:
         self.states: dict[str, tuple[str, float]] = {}
+        self.auth = AuthStore()
+
+    @staticmethod
+    def browser_cookie(browser: str) -> tuple[str, str]:
+        return (
+            "Set-Cookie",
+            f"__Host-github-backup-csrf={browser}; Secure; HttpOnly; SameSite=Lax; Path=/",
+        )
+
+    def account_response(
+        self,
+        method: str,
+        path: str,
+        browser: str,
+        session: str,
+        form: dict[str, list[str]],
+        headers: list[tuple[str, str]],
+    ) -> tuple[str, str] | None:
+        registered = self.auth.registered()
+        if path == "/register" and registered:
+            return "404 Not Found", "Registration is permanently closed."
+        if not registered:
+            if method == "POST" and path == "/register":
+                if self.auth.register(
+                    form.get("username", [""])[0].strip(),
+                    form.get("password", [""])[0],
+                    form.get("confirmation", [""])[0],
+                    form.get("code", [""])[0].strip(),
+                ):
+                    headers.extend(
+                        [
+                            ("Location", "/login?notice=registered"),
+                            self.browser_cookie(secrets.token_hex(32)),
+                        ]
+                    )
+                    return "303 See Other", "Account created. Log in with your saved credentials."
+                return "400 Bad Request", account_page(
+                    browser,
+                    register=True,
+                    error="Check the registration code, username, password and confirmation.",
+                )
+            if method == "GET" and path in ("/", "/register", "/login"):
+                return "200 OK", account_page(browser, register=True)
+            headers.append(("Location", "/register"))
+            return "303 See Other", "Register the deployment owner first."
+        authenticated = self.auth.authenticated(session, browser)
+        if method == "POST" and path == "/login" and not authenticated:
+            if self.auth.login(
+                form.get("username", [""])[0].strip(), form.get("password", [""])[0]
+            ):
+                browser = secrets.token_hex(32)
+                token = self.auth.create_session(browser)
+                headers.extend(
+                    [
+                        self.browser_cookie(browser),
+                        (
+                            "Set-Cookie",
+                            f"{SESSION_COOKIE}={token}; Secure; HttpOnly; SameSite=Lax; Path=/",
+                        ),
+                        ("Location", "/"),
+                    ]
+                )
+                return "303 See Other", "Logged in."
+            return "401 Unauthorized", account_page(
+                browser, register=False, error="Invalid username or password."
+            )
+        if not authenticated:
+            if method == "GET" and path in ("/", "/login"):
+                return "200 OK", account_page(browser, register=False)
+            headers.append(("Location", "/login"))
+            return "303 See Other", "Log in to continue."
+        if method == "POST" and path == "/logout":
+            self.auth.logout(session)
+            headers.extend(
+                [
+                    (
+                        "Set-Cookie",
+                        f"{SESSION_COOKIE}=; Secure; HttpOnly; SameSite=Lax; Path=/; Max-Age=0",
+                    ),
+                    self.browser_cookie(secrets.token_hex(32)),
+                    ("Location", "/login"),
+                ]
+            )
+            return "303 See Other", "Logged out."
+        if path == "/login":
+            headers.append(("Location", "/"))
+            return "303 See Other", "Already logged in."
+        return None
 
     def __call__(self, env: dict[str, Any], start: Callable[..., Any]) -> Iterable[bytes]:
         status = "200 OK"
@@ -322,19 +326,38 @@ class SetupApplication:
             ("Cache-Control", "no-store"),
             ("Referrer-Policy", "no-referrer"),
             ("X-Content-Type-Options", "nosniff"),
+            ("X-Frame-Options", "DENY"),
+            ("Strict-Transport-Security", "max-age=31536000"),
+            ("Permissions-Policy", "camera=(), microphone=(), geolocation=()"),
             (
                 "Content-Security-Policy",
                 "default-src 'none'; form-action 'self' "
-                "https://github.com; frame-ancestors 'none'; base-uri 'none'",
+                "https://github.com; frame-ancestors 'none'; base-uri 'none'; "
+                "script-src 'self'; style-src 'self'",
             ),
         ]
         if env.get("PATH_INFO") == "/health" and env.get("REQUEST_METHOD") == "GET":
             start(status, headers)
             return [b"OK"]
+        asset = {
+            "/assets/config.css": ("config.css", "text/css"),
+            "/assets/config.js": ("config.js", "application/javascript"),
+        }.get(env.get("PATH_INFO", ""))
+        if asset and env.get("REQUEST_METHOD") == "GET":
+            start(
+                "200 OK",
+                [
+                    ("Content-Type", asset[1]),
+                    ("Cache-Control", "public, max-age=300"),
+                    ("X-Content-Type-Options", "nosniff"),
+                ],
+            )
+            return [files("github_backup").joinpath("static", asset[0]).read_bytes()]
+        authenticated = False
+        browser = ""
         try:
-            origin = os.environ["GITHUB_SETUP_URL"].rstrip("/")
+            origin = (os.getenv("GITHUB_CONFIG_URL") or os.environ["GITHUB_SETUP_URL"]).rstrip("/")
             parsed = urlsplit(origin)
-            password = os.environ["GITHUB_SETUP_PASSWORD"]
             if (
                 parsed.scheme != "https"
                 or not parsed.hostname
@@ -343,36 +366,164 @@ class SetupApplication:
                 or parsed.path
                 or parsed.query
                 or parsed.fragment
-                or len(password) < 24
             ):
-                raise ValueError("Setup requires an HTTPS origin and a password of >=24 characters")
-            expected = "Basic " + base64.b64encode(f"admin:{password}".encode()).decode()
-            if not secrets.compare_digest(str(env.get("HTTP_AUTHORIZATION", "")), expected):
-                start(
-                    "401 Unauthorized",
-                    [*headers, ("WWW-Authenticate", 'Basic realm="GitHub setup"')],
-                )
-                return [b"Authentication required"]
+                raise ValueError("Config requires an HTTPS origin")
             # Never trust a request Host or forwarded header to construct callback URLs.
             if env.get("HTTP_HOST", "").casefold() != parsed.netloc.casefold():
                 start("400 Bad Request", headers)
                 return [b"Unexpected host"]
             cookies = SimpleCookie()
             cookies.load(env.get("HTTP_COOKIE", ""))
-            cookie = cookies.get("__Host-github-backup-setup")
+            cookie = cookies.get("__Host-github-backup-csrf")
             browser = cookie.value if cookie else ""
             if not re.fullmatch(r"[a-f0-9]{64}", browser):
                 browser = secrets.token_hex(32)
                 headers.append(
                     (
                         "Set-Cookie",
-                        f"__Host-github-backup-setup={browser}; "
+                        f"__Host-github-backup-csrf={browser}; "
                         "Secure; HttpOnly; SameSite=Lax; Path=/",
                     )
                 )
-            method, path = env.get("REQUEST_METHOD"), env.get("PATH_INFO")
-            if method == "GET" and path == "/callback":
-                query = parse_qs(env.get("QUERY_STRING", ""))
+            method, path = str(env.get("REQUEST_METHOD", "")), str(env.get("PATH_INFO", ""))
+            form = {}
+            if method == "POST":
+                size = int(env.get("CONTENT_LENGTH") or "0")
+                limit = 4096 if path in ("/register", "/login", "/logout", "/account") else 262144
+                if not 0 < size <= limit:
+                    raise ValueError("Invalid request size")
+                if env.get("CONTENT_TYPE", "").split(";")[0] != "application/x-www-form-urlencoded":
+                    raise ValueError("Invalid form encoding")
+                raw = env["wsgi.input"].read(size)
+                if len(raw) != size:
+                    raise ValueError("Incomplete form body")
+                form = parse_qs(
+                    raw.decode("utf-8"),
+                    keep_blank_values=True,
+                    strict_parsing=True,
+                    errors="strict",
+                    max_num_fields=10000,
+                )
+                allowed = {
+                    "/register": {"csrf", "username", "password", "confirmation", "code"},
+                    "/login": {"csrf", "username", "password"},
+                    "/logout": {"csrf"},
+                    "/account": {
+                        "csrf",
+                        "username",
+                        "password",
+                        "confirmation",
+                        "current_password",
+                    },
+                    "/connect": {"csrf", "registration_owner"},
+                    "/owners": {"csrf", "owner", "app_id"},
+                    "/scope": {"csrf", "owner", "app_id", "mode", "repositories"},
+                    "/spaces": {
+                        "csrf",
+                        "bucket",
+                        "region",
+                        "prefix",
+                        "access_key_id",
+                        "secret_access_key",
+                        "confirm_destination",
+                        "current_password",
+                    },
+                    "/monitoring": {
+                        "csrf",
+                        "url",
+                        "enabled",
+                        "allow_http",
+                        "timeout_seconds",
+                        "max_success_age_hours",
+                    },
+                }.get(path, {"csrf"})
+                if set(form) - allowed or any(
+                    len(values) != 1 for key, values in form.items() if key != "repositories"
+                ):
+                    raise ValueError("Unexpected or repeated form field")
+                if not secrets.compare_digest(form.get("csrf", [""])[0], browser):
+                    raise ValueError("Invalid form token; reload config")
+            session_cookie = cookies.get(SESSION_COOKIE)
+            session = session_cookie.value if session_cookie else ""
+            response = self.account_response(method, path, browser, session, form, headers)
+            authenticated = response is None
+            if response is not None:
+                status, body = response
+                notices = {
+                    "notice=account-updated": "Account updated. Log in with your new credentials.",
+                    "notice=registered": "Account created. Log in to configure backups.",
+                }
+                if path == "/login" and method == "GET" and env.get("QUERY_STRING") in notices:
+                    body = (
+                        '<div class="notice" role="status">'
+                        + notices[env["QUERY_STRING"]]
+                        + "</div>"
+                        + body
+                    )
+            elif path == "/account":
+                if method == "POST":
+                    account_changed = self.auth.change_account(
+                        session,
+                        browser,
+                        form.get("current_password", [""])[0],
+                        form.get("username", [""])[0],
+                        form.get("password", [""])[0],
+                        form.get("confirmation", [""])[0],
+                    )
+                    if account_changed:
+                        headers.extend(
+                            [
+                                ("Location", "/login?notice=account-updated"),
+                                (
+                                    "Set-Cookie",
+                                    f"{SESSION_COOKIE}=; Secure; HttpOnly; "
+                                    "SameSite=Lax; Path=/; Max-Age=0",
+                                ),
+                                self.browser_cookie(secrets.token_hex(32)),
+                            ]
+                        )
+                        authenticated = False
+                        status, body = "303 See Other", "Account updated. Sign in again."
+                    else:
+                        status, body = (
+                            "400 Bad Request",
+                            credentials_page(
+                                self.auth.username(),
+                                browser,
+                                "Confirm your current password and enter a valid username "
+                                "or a different strong password.",
+                            ),
+                        )
+                elif method == "GET":
+                    body = credentials_page(self.auth.username(), browser)
+                else:
+                    status, body = "405 Method Not Allowed", "Use the account form."
+            elif method == "GET" and path == "/history":
+                query = parse_qs(
+                    env.get("QUERY_STRING", ""), keep_blank_values=True, max_num_fields=3
+                )
+                if set(query) - {"q", "page"} or any(len(v) != 1 for v in query.values()):
+                    raise ValueError("Invalid activity query")
+                page = int(query.get("page", ["1"])[0])
+                term = query.get("q", [""])[0]
+                if not 1 <= page <= 10 or len(term) > 100 or any(ord(c) < 32 for c in term):
+                    raise ValueError("Invalid activity filter")
+                try:
+                    body = history_page(recent_backups(), page, term)
+                except Exception:
+                    status, body = (
+                        "503 Service Unavailable",
+                        (
+                            "<h1>Activity is temporarily unavailable.</h1>"
+                            "<p>Backups continue independently. "
+                            "Check the worker logs for local history errors.</p>"
+                            '<a href="/">Back to config</a>'
+                        ),
+                    )
+            elif method == "GET" and path == "/callback":
+                query = parse_qs(env.get("QUERY_STRING", ""), errors="strict", max_num_fields=10)
+                if any(len(values) != 1 for values in query.values()):
+                    raise ValueError("Repeated query parameter")
                 state = query.get("state", [""])[0]
                 code = query.get("code", [""])[0]
                 with LOCK:
@@ -391,16 +542,14 @@ class SetupApplication:
                     data["apps"].append(app)
                     write_credentials(data)
                 status, body = "303 See Other", "App created. Continue with installation."
-                headers.append(("Location", origin + "/"))
-            elif method == "POST" and path in ("/connect", "/owners", "/scope", "/spaces"):
-                size = int(env.get("CONTENT_LENGTH") or "0")
-                if not 0 < size <= 262144:
-                    raise ValueError("Invalid request size")
-                if env.get("CONTENT_TYPE", "").split(";")[0] != "application/x-www-form-urlencoded":
-                    raise ValueError("Invalid form encoding")
-                form = parse_qs(env["wsgi.input"].read(size).decode())
-                if not secrets.compare_digest(form.get("csrf", [""])[0], browser):
-                    raise ValueError("Invalid form token; reload setup")
+                headers.append(("Location", origin + "/?notice=app-created#github"))
+            elif method == "POST" and path in (
+                "/connect",
+                "/owners",
+                "/scope",
+                "/spaces",
+                "/monitoring",
+            ):
                 if path == "/connect":
                     with LOCK:
                         now = time.monotonic()
@@ -430,20 +579,54 @@ class SetupApplication:
                     )
                     encoded_manifest = html.escape(json.dumps(manifest), quote=True)
                     body = (
-                        f'<h1>Create your backup App</h1><form method="post" '
+                        '<div class="intro"><p class="eyebrow">GitHub connection</p>'
+                        '<h1>Continue on GitHub.</h1><p class="muted">Approve the read-only App, '
+                        "then return to config to install it and connect an account.</p></div>"
+                        '<form method="post" '
                         f'action="{target}?state={state}">'
                         f'<input type="hidden" name="manifest" value="{encoded_manifest}">'
-                        "<button>Create App on GitHub</button></form>"
+                        '<div class="actions"><button>Create App on GitHub</button>'
+                        '<a class="button secondary" href="/#github">Back to config</a>'
+                        "</div></form>"
                     )
                 else:
                     with LOCK:
                         data = current_settings()
-                        if path == "/scope":
+                        if path == "/monitoring":
+                            from github_backup.monitoring import PushMonitor
+
+                            old = data.get("monitoring") or {}
+                            candidate_monitor = {
+                                "enabled": form.get("enabled") == ["yes"],
+                                "url": form.get("url", [""])[0].strip() or old.get("url", ""),
+                                "allow_http": form.get("allow_http") == ["yes"],
+                                "timeout_seconds": float(
+                                    form.get(
+                                        "timeout_seconds", [str(old.get("timeout_seconds", 5))]
+                                    )[0]
+                                ),
+                                "max_success_age_hours": float(
+                                    form.get(
+                                        "max_success_age_hours",
+                                        [str(old.get("max_success_age_hours", 0))],
+                                    )[0]
+                                ),
+                            }
+                            PushMonitor.from_settings(candidate_monitor, 1)
+                            data["monitoring"] = candidate_monitor
+                            write_credentials(data)
+                        elif path == "/scope":
                             save_scope(data, form)
                         elif path == "/spaces":
                             from github_backup.setup_settings import validate_spaces
 
                             previous = data.get("spaces") or {}
+                            if previous and not self.auth.reauthenticate(
+                                session, browser, form.get("current_password", [""])[0]
+                            ):
+                                raise ValueError(
+                                    "Confirm the current password before editing storage"
+                                )
                             candidate = {
                                 name: form.get(name, [""])[0].strip()
                                 for name in (
@@ -481,37 +664,82 @@ class SetupApplication:
                             ]
                             write_credentials(data)
                     status, body = "303 See Other", "Settings saved for the next backup run."
-                    headers.append(("Location", origin + "/"))
+                    headers.append(
+                        (
+                            "Location",
+                            origin
+                            + "/?notice=saved#"
+                            + {
+                                "/spaces": "storage",
+                                "/monitoring": "monitoring",
+                                "/owners": "scope",
+                                "/scope": "scope",
+                            }[path],
+                        )
+                    )
             elif method == "GET" and path == "/":
                 body = home_page(current_settings(), browser)
+                notices = {
+                    "notice=saved": "Saved. Your configuration has been updated.",
+                    "notice=app-created": (
+                        "App created. Install it on GitHub, then connect its account below."
+                    ),
+                }
+                if env.get("QUERY_STRING") in notices:
+                    body = (
+                        '<div class="notice" role="status">'
+                        + notices[env["QUERY_STRING"]]
+                        + "</div>"
+                        + body
+                    )
             elif method == "GET" and path == "/repositories":
-                query = parse_qs(env.get("QUERY_STRING", ""))
+                query = parse_qs(env.get("QUERY_STRING", ""), errors="strict", max_num_fields=10)
+                if any(len(values) != 1 for values in query.values()):
+                    raise ValueError("Repeated query parameter")
                 app = find_app(read_credentials(), query.get("app_id", [""])[0])
                 body = repository_page(app, query.get("owner", [""])[0], browser)
             else:
                 status, body = "404 Not Found", "Not found"
+        except AuthLockedError:
+            LOGGER.error("Config authentication unavailable; registration remains closed")
+            status, body = (
+                "503 Service Unavailable",
+                (
+                    "Authentication state is unavailable. Registration cannot be reopened. "
+                    "Restore the complete authentication state or redeploy from scratch."
+                ),
+            )
+        except AuthRateLimited:
+            headers.append(("Retry-After", "60"))
+            status, body = (
+                "429 Too Many Requests",
+                "Too many login attempts. Try again in one minute.",
+            )
         except Exception:
             # Exceptions may contain the conversion code, API response, or other secrets.
-            LOGGER.warning("Setup request failed; no stored credentials were intentionally removed")
+            LOGGER.warning(
+                "Config request failed; no stored credentials were intentionally removed"
+            )
             status, body = (
                 "400 Bad Request",
                 (
-                    "Setup could not complete. Check the setup URL/password, "
+                    "Config could not be saved. Check the config URL, "
                     "retry with a fresh flow, "
                     "or verify the App installation and repository permissions. "
                     "All/All except require "
                     "All repositories on GitHub. For Spaces check the region, bucket, "
                     "key permissions "
                     "and destination-change confirmation. "
-                    '<a href="/">Return to setup</a>'
+                    '<a href="/">Return to config</a>'
                 ),
             )
         start(status, headers)
         return [
-            (
-                '<!doctype html><html lang="en"><meta charset="utf-8">'
-                '<meta name="viewport" content="width=device-width,initial-scale=1">'
-                "<title>GitHub backup setup</title><body>" + body + "</body></html>"
+            document(
+                body,
+                browser,
+                authenticated=authenticated,
+                current_path=str(env.get("PATH_INFO", "/")),
             ).encode()
         ]
 

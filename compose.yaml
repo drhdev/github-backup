@@ -57,7 +57,7 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
-  github-setup:
+  github-config:
     platform: linux/amd64
     build:
       context: .
@@ -65,7 +65,7 @@ services:
     entrypoint: ["gunicorn"]
     command: ["--bind", "0.0.0.0:8080", "--workers", "1", "--threads", "2",
               "--timeout", "120", "--graceful-timeout", "20",
-              "--worker-tmp-dir", "/tmp", "github_backup.onboarding:application"]
+              "--worker-tmp-dir", "/tmp", "github_backup.config_web:application"]
     restart: unless-stopped
     init: true
     read_only: true
@@ -80,8 +80,7 @@ services:
       - backup-cache:/cache
     expose: ["8080"]
     environment:
-      GITHUB_SETUP_URL: ${GITHUB_SETUP_URL:-}
-      GITHUB_SETUP_PASSWORD: ${GITHUB_SETUP_PASSWORD:-}
+      GITHUB_CONFIG_URL: ${GITHUB_CONFIG_URL:-${GITHUB_SETUP_URL:-}}
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=5)"]
       interval: 60s

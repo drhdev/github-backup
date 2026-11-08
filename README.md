@@ -37,26 +37,40 @@ issues, Actions artifacts, secrets, or submodule contents from other repositorie
 1. Add `https://github.com/drhdev/github-backup` using the **Docker Compose** build strategy.
    Set Base Directory to `/` and Docker Compose Location to `/compose.yaml`.
 2. Keep one replica of each service and the persistent `backup-cache` volume.
-3. Assign an **HTTPS domain to `github-setup`, target port 8080**. If Coolify encodes
+3. Assign an **HTTPS domain to `github-config`, target port 8080**. If Coolify encodes
    the target port in its domain field, use `https://github-backup.example.com:8080`.
    The external URL remains `https://github-backup.example.com` on port 443.
    Leave `github-backup` without a domain or published port.
 4. **Disable automatic deployments, previews, and overlapping/rolling replacements.**
-5. Set just these two required environment variables, keep the password masked, and deploy:
+5. Set the required config URL and deploy:
 
 ```dotenv
-GITHUB_SETUP_URL=https://github-backup.example.com
-GITHUB_SETUP_PASSWORD=REPLACE_WITH_OUTPUT_OF_OPENSSL_RAND_HEX_32
+GITHUB_CONFIG_URL=https://github-backup.example.com
 ```
 
-Generate the password with `openssl rand -hex 32`. The URL must be the exact external HTTPS
-origin without a path or internal `:8080` suffix. Enable Buildtime and Runtime for supplied
-values in Coolify. No Spaces credentials, bucket settings, GitHub App IDs or PEMs need to
-be entered in the environment. See [the deployment guide](docs/COOLIFY.md).
+The URL is the exact external HTTPS origin without a path or internal `:8080` suffix.
+Enable Buildtime and Runtime in Coolify. No password, Spaces credentials, App IDs or PEMs
+need to be entered in the environment.
 
-### 2. Configure DigitalOcean Spaces in the setup page
+On the first visit, the page shows **Create your config account**. In Coolify, open the
+**`github-config` service Terminal** and retrieve its one-time registration code:
 
-Open the setup URL and log in as **admin** with your setup password. Enter:
+```bash
+python -m github_backup.config_auth registration-code
+```
+
+Enter that code, choose your username and a unique **16-128 character password/passphrase**,
+confirm it, and save the credentials in your password manager. Then use the login form.
+The code prevents someone else from claiming an unregistered deployment. Registration closes
+permanently after the first account is created; later visits show login, with a logout button
+inside setup. **There is no password-reset or second-registration feature.** Forgotten
+credentials require a fresh deployment with a new persistent volume; existing S3 backups
+are preserved. Missing/corrupt authentication files block access instead of reopening registration.
+See [authentication and recovery](docs/GITHUB_APP.md#config-account-and-recovery).
+
+### 2. Configure DigitalOcean Spaces in the config page
+
+After registering and logging in with your chosen username, enter:
 
 | Setup field | Where to get it |
 |---|---|
@@ -102,6 +116,22 @@ Optional scheduling, capacity, retention and monitoring settings retain the defa
 [.env.example](.env.example). Existing manual environment deployments remain supported;
 saved browser Spaces settings take precedence over their legacy Spaces variables.
 
+### Edit configuration and review activity
+
+The **Config** page follows three steps: **1. Storage → 2. GitHub connections → 3. Repository scope**.
+Configured sections collapse; click their heading to reopen and edit. Saved secrets are never
+shown or prefilled. Editing saved storage requires your current password. Use **Monitoring** for optional Kuma settings. The interface uses a neutral
+black-and-white design, automatic light/dark mode and a theme selector, with mobile touch targets.
+
+Open **Account** to change your username or password. Confirm your current password; changing
+either signs out all browsers without affecting backups or reopening registration.
+
+Open **Activity** to view/search the last **250 completed repository checks**, including status,
+completion time and duration, in pages of 25. Times adapt to the browser's time zone; UTC remains
+available in the timestamp title. Unchanged successful checks are included. History starts when
+this feature is deployed; older remote manifests are not imported. This local bounded log contains
+no credentials, raw exception messages or Git URLs and never blocks backups if history storage fails.
+
 ### 4. Verify the first backup
 
 Open the Coolify logs. A successful run emits `backup_finished` with `exit_code: 0`.
@@ -139,7 +169,7 @@ it cannot fit a new artifact, it fails visibly rather than delete protected reco
 
 ## Docker logs and monitoring
 
-Application diagnostics are JSON on **stderr**; scheduler/run events are JSON on **stdout**.
+Backup diagnostics are JSON on **stderr**; scheduler/run events are JSON on **stdout**.
 Docker and Coolify collect both streams. No application log files or log-volume mounts are required.
 Compose rotates Docker logs at **10 MB × 3 files**. Locally:
 
@@ -152,18 +182,17 @@ repositories, or stale checks become unhealthy. Docker's restart policy does not
 container solely for being unhealthy; configure notifications and inspect the logs.
 
 **Optional Uptime Kuma:** create a **Push** monitor with a **180-second heartbeat interval**,
-**0 retries** and your notification channel. Copy its generated Push URL into:
-
-```dotenv
-UPTIME_KUMA_PUSH_URL=https://kuma.example.com/api/push/REPLACE_WITH_PUSH_TOKEN
-```
+**0 retries** and your notification channel. In the config page's **Uptime Kuma** section,
+enter its generated secret Push URL, check **Enable Push monitoring**, and save. Changes
+apply within 30 seconds without a restart. The URL is never displayed again; leave it blank
+to keep the saved value. Uncheck monitoring and save to disable it.
 
 The worker pushes at most every 60 seconds, plus status changes. It reports failure or
 overdue successful checks even while the container is running; if the worker disappears,
 Kuma detects the missing heartbeat. The URL is secret. No Docker socket or inbound worker
 port is required. See [the monitoring guide](docs/MONITORING.md) for startup behavior,
 freshness thresholds, private-network HTTP, notification tests, and all optional variables.
-Leave the URL empty to disable it completely.
+Legacy monitoring environment variables remain a fallback until settings are saved in the page.
 
 ## Documentation
 

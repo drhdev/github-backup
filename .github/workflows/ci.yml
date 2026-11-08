@@ -73,21 +73,21 @@ jobs:
             github-backup:ci --version
           docker run --rm --platform linux/amd64 --read-only --cap-drop=ALL --security-opt=no-new-privileges \
             github-backup:ci help run
-      - name: Smoke-test protected setup server
+      - name: Smoke-test protected config server
         run: |
-          docker run --detach --name github-backup-setup-ci --platform linux/amd64 \
+          docker run --detach --name github-backup-config-ci --platform linux/amd64 \
             --read-only --cap-drop=ALL --security-opt=no-new-privileges \
             --tmpfs /tmp:rw,noexec,nosuid,size=16m \
             --entrypoint gunicorn github-backup:ci \
             --bind 0.0.0.0:8080 --workers 1 --threads 2 --worker-tmp-dir /tmp \
-            github_backup.onboarding:application
-          trap 'docker rm --force github-backup-setup-ci' EXIT
+            github_backup.config_web:application
+          trap 'docker rm --force github-backup-config-ci' EXIT
           for attempt in $(seq 1 20); do
-            if docker exec github-backup-setup-ci python -c \
+            if docker exec github-backup-config-ci python -c \
               "import urllib.request; assert urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=2).read() == b'OK'"; then
               exit 0
             fi
             sleep 1
           done
-          docker logs github-backup-setup-ci
+          docker logs github-backup-config-ci
           exit 1

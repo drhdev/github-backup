@@ -111,6 +111,26 @@ def health() -> int:
         return 1
 
 
+def load_monitor(interval_hours: float, previous: PushMonitor | None = None) -> PushMonitor:
+    try:
+        settings = current_settings()
+        monitor = (
+            PushMonitor.from_settings(settings["monitoring"], interval_hours)
+            if "monitoring" in settings
+            else PushMonitor.from_environment(interval_hours)
+        )
+        if previous is not None and (monitor.url, monitor.timeout, monitor.max_age_seconds) == (
+            previous.url,
+            previous.timeout,
+            previous.max_age_seconds,
+        ):
+            return previous  # Preserve Push throttling across settings reloads.
+        return monitor
+    except Exception as exc:
+        emit_event("monitoring_config_unavailable", error_type=type(exc).__name__)
+        return previous if previous is not None else PushMonitor()
+
+
 def run() -> None:
     os.umask(0o077)
     configure_logging(verbose=False, json_logs=True)
@@ -124,7 +144,7 @@ def run() -> None:
         raise ValueError("BACKUP_TIMEOUT_HOURS must be finite and at least one minute")
     if not math.isfinite(interval) or interval < 3600:
         raise ValueError("BACKUP_INTERVAL_HOURS must be at least 1")
-    monitor = PushMonitor.from_environment(interval / 3600)
+    monitor = load_monitor(interval / 3600)
     encoded = os.environ.pop("GITHUB_APP_PRIVATE_KEY_BASE64", "")
     if encoded:
         key = base64.b64decode(encoded, validate=True)
@@ -162,6 +182,7 @@ def run() -> None:
     )
     waiting_logged = False
     while not STOP.is_set():
+        monitor = load_monitor(interval / 3600, monitor)
         try:
             if config is None:
                 config = deployment_config()
@@ -218,6 +239,7 @@ def once() -> None:
     from github_backup.app_auth import AppClient
     from github_backup.backup import BackupService
     from github_backup.gitops import GitRunner
+    from github_backup.history import record_backup
     from github_backup.storage import create_storage
 
     configure_logging(verbose=False, json_logs=True)
@@ -232,7 +254,9 @@ def once() -> None:
         max_retries=config.git_max_retries,
         verify_mirrors=True,
     )
-    manifest, location = BackupService(config, github, git, create_storage(config)).run()
+    manifest, location = BackupService(
+        config, github, git, create_storage(config), result_callback=record_backup
+    ).run()
     emit_event(
         "manifest",
         location=location,

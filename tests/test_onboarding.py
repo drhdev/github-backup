@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import base64
 import html
 import io
 import json
@@ -15,7 +14,7 @@ from urllib.parse import urlencode
 import pytest
 
 from github_backup import onboarding as setup
-from github_backup import scheduler
+from github_backup import scheduler, setup_auth
 from github_backup.errors import GitHubAPIError
 
 
@@ -23,6 +22,7 @@ from github_backup.errors import GitHubAPIError
 def credentials(tmp_path, monkeypatch):
     path = tmp_path / "auth" / "credentials.json"
     monkeypatch.setattr(setup, "CREDENTIALS", path)
+    monkeypatch.setattr(setup_auth, "AUTH_DIRECTORY", tmp_path / "setup-auth")
     return {
         "id": "123",
         "slug": "backup-test",
@@ -39,12 +39,25 @@ def read_app():
 @pytest.fixture
 def ui(credentials, monkeypatch):
     monkeypatch.setenv("GITHUB_SETUP_URL", "https://backup.example.com")
-    monkeypatch.setenv("GITHUB_SETUP_PASSWORD", "a" * 32)
-    return setup.SetupApplication()
+    ui = setup.SetupApplication()
+    ui.auth.register(
+        "owner",
+        "Correct-horse-battery-42!",
+        "Correct-horse-battery-42!",
+        ui.auth.registration_code(),
+    )
+    browser = "a" * 64
+    session = ui.auth.create_session(browser)
+    ui.test_cookie = f"__Host-github-backup-csrf={browser}; {setup_auth.SESSION_COOKIE}={session}"
+    return ui
 
 
 def request(ui, path="/", method="GET", form=None, cookie="", auth=True, **overrides):
-    body = urlencode(form or {}).encode()
+    body = urlencode(form or {}, doseq=True).encode()
+    if auth:
+        defaults = dict(part.split("=", 1) for part in ui.test_cookie.split("; "))
+        defaults.update(dict(part.split("=", 1) for part in cookie.split("; ") if "=" in part))
+        cookie = "; ".join(f"{name}={value}" for name, value in defaults.items())
     env = {
         "REQUEST_METHOD": method,
         "PATH_INFO": path,
@@ -54,8 +67,6 @@ def request(ui, path="/", method="GET", form=None, cookie="", auth=True, **overr
         "CONTENT_TYPE": "application/x-www-form-urlencoded",
         "wsgi.input": io.BytesIO(body),
     }
-    if auth:
-        env["HTTP_AUTHORIZATION"] = "Basic " + base64.b64encode(b"admin:" + b"a" * 32).decode()
     env.update(overrides)
     response = Mock()
     output = b"".join(ui(env, response)).decode()
@@ -64,11 +75,10 @@ def request(ui, path="/", method="GET", form=None, cookie="", auth=True, **overr
 
 
 def start_flow(ui):
-    status, headers, body = request(ui)
+    status, _, body = request(ui)
     assert status == "200 OK"
     token = re.search(r'name="csrf" value="([a-f0-9]+)"', body)[1]
-    cookie = headers["Set-Cookie"].split(";")[0]
-    assert "Secure; HttpOnly; SameSite=Lax" in headers["Set-Cookie"]
+    cookie = ui.test_cookie
     status, _, body = request(ui, "/connect", "POST", {"csrf": token}, cookie)
     assert status == "200 OK"
     state = re.search(r"new\?state=([a-f0-9]+)", body)[1]
@@ -83,9 +93,10 @@ def start_flow(ui):
 def test_health_and_authentication(ui):
     assert request(ui, "/health", auth=False)[0] == "200 OK"
     status, headers, body = request(ui, auth=False)
-    assert status == "401 Unauthorized"
-    assert "WWW-Authenticate" in headers
-    assert "csrf" not in body
+    assert status == "200 OK"
+    assert "WWW-Authenticate" not in headers
+    assert "current-password" in body
+    assert "Create your config account" not in body
     assert request(ui, HTTP_HOST="evil.example")[0] == "400 Bad Request"
 
 
@@ -95,7 +106,6 @@ def test_health_and_authentication(ui):
         ("GITHUB_SETUP_URL", "http://backup.example.com"),
         ("GITHUB_SETUP_URL", "https://user@backup.example.com"),
         ("GITHUB_SETUP_URL", "https://backup.example.com/path"),
-        ("GITHUB_SETUP_PASSWORD", "short"),
     ],
 )
 def test_invalid_server_configuration(ui, monkeypatch, variable, value):
@@ -125,7 +135,7 @@ def test_callback_rejects_unbound_or_expired_codes(ui, monkeypatch, kind):
     cookie, _, state = start_flow(ui)
     code = "secret-conversion-code"
     if kind == "wrong-browser":
-        cookie = "__Host-github-backup-setup=" + "b" * 64
+        cookie = "__Host-github-backup-csrf=" + "b" * 64
     elif kind == "expired":
         browser, started = ui.states[state]
         ui.states[state] = (browser, started - 3601)
@@ -138,7 +148,7 @@ def test_callback_rejects_unbound_or_expired_codes(ui, monkeypatch, kind):
     status, _, _ = request(
         ui, "/callback", cookie=cookie, QUERY_STRING=urlencode({"state": state, "code": code})
     )
-    assert status == "400 Bad Request"
+    assert status == ("303 See Other" if kind == "wrong-browser" else "400 Bad Request")
     exchange.assert_not_called()
     assert not setup.CREDENTIALS.exists()
 

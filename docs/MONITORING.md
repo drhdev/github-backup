@@ -1,8 +1,8 @@
 # Docker logging and optional Uptime Kuma
 
 The default installation is [Coolify + Docker Compose](COOLIFY.md). This worker does not
-expose a website or HTTP health endpoint. The separate `github-setup` service has an HTTPS
-domain for onboarding; its `/health` checks only the setup server. Neither health check
+expose a website or HTTP health endpoint. The separate `github-config` service has an HTTPS
+domain for onboarding; its `/health` checks only the config server. Neither health check
 proves that a backup completed. No Docker socket is required.
 
 ## Standard Docker logging
@@ -45,7 +45,7 @@ It checks the scheduler heartbeat, completion status, and overdue idle checks. A
 backup may be healthy before any backup has completed. Health is not proof of restoration.
 While GitHub or Spaces setup is incomplete, a live
 waiting scheduler is healthy, emits `waiting_for_setup`, and reports down to Kuma
-because no successful backup exists. Setup HTTP access logging is disabled to keep
+because no successful backup exists. Config HTTP access logging is disabled to keep
 GitHub conversion codes out of logs; Gunicorn lifecycle/errors go to stderr.
 
 Enable Coolify notifications for unhealthy resources and failed/restarting deployments.
@@ -55,7 +55,7 @@ rather than adding a restart loop that could hide it.
 
 ## Optional Uptime Kuma Push monitor
 
-Monitoring is disabled by default: `UPTIME_KUMA_PUSH_URL` is empty. This is an outbound
+Monitoring is disabled by default. Configure it in the protected config page after logging in. This is an outbound
 Push integration, not an HTTP monitor of the worker. It requires no Kuma administrator
 API key and no Docker socket access. The generated Push URL contains a secret token.
 
@@ -72,14 +72,26 @@ API key and no Docker socket access. The generated Push URL contains a secret to
 6. Save and copy the generated **Push URL**, for example
    `https://kuma.example.com/api/push/SECRET_TOKEN?status=up&msg=OK&ping=`.
    Do not put it on a public status page, in a screenshot, Git commit, or support ticket.
-7. In the Coolify backup application's production environment, add this URL as the secret
-   runtime variable `UPTIME_KUMA_PUSH_URL`. Disable its build-time exposure. Save and redeploy.
-   The application safely replaces the example status/message parameters on every push.
+7. In the config page's **Uptime Kuma** section, paste the URL, check **Enable Push monitoring**
+   and save. The worker reloads it within 30 seconds without a restart. The URL is never echoed;
+   leave its input blank to keep a saved value. Uncheck Enable and save to disable monitoring.
+8. Keep request timeout at **5 seconds** and maximum successful-backup age at **0** for automatic
+   freshness (`2 × BACKUP_INTERVAL_HOURS + 1`, three hours by default), or adjust those fields
+   for your run duration. Enable private HTTP only for a trusted private-network Kuma endpoint.
+
+Saving settings does not send a synthetic up ping. The scheduler reports its actual state,
+including down while waiting for the first successful check. Invalid reloaded monitoring
+settings are logged by error type without secrets and never stop backups; an existing monitor
+is retained where possible. Settings are stored privately alongside GitHub/Spaces settings.
 
 No second Coolify scheduled task, shell `curl` job, health-check URL, or Kuma HTTP monitor
 is needed. Do not add an unconditional success ping: it would hide backup failures.
 
-### Environment settings
+### Legacy environment fallback
+
+Saved config-page monitoring settings, including explicit disable, override **all** legacy
+`UPTIME_KUMA_*` values. The environment alternative below applies only until settings are saved
+in the page; edit the form to change timeout/freshness afterwards.
 
 | Variable | Default | Meaning |
 |---|---|---|

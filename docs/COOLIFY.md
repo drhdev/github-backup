@@ -1,7 +1,7 @@
 # Docker Compose on Coolify with DigitalOcean Spaces
 
 This is the recommended deployment. A background worker backs up all configured GitHub
-App installations to a private Spaces bucket. A small protected setup service provides
+App installations to a private Spaces bucket. A small protected config service provides
 automated GitHub App registration through an HTTPS domain. The existing CLI and filesystem backends remain available.
 
 Protect Coolify and Spaces with credentials independent of the GitHub accounts being backed up.
@@ -49,7 +49,7 @@ References: [Docker Engine on Ubuntu](https://docs.docker.com/engine/install/ubu
 | Run timeout | 12 hours | Stop hung backups and report failure |
 | Workers | 1 | Process repositories sequentially |
 | Worker CPU / memory limits | 0.5 CPU / 512 MiB | Prevent host resource exhaustion |
-| Setup CPU / memory limits | 0.25 CPU / 128 MiB | One web worker with two threads; usually idle |
+| Config CPU / memory limits | 0.25 CPU / 128 MiB | One web worker with two threads; usually idle |
 | Manifest history | 14 recent manifests; independent per-repository catalogs | Bound diagnostic history |
 | Extra service data | Disabled | Predictable scope and size; Git refs/history only |
 | Cache | Persistent named volume | Incremental Git fetches between runs |
@@ -59,28 +59,41 @@ Restarting the service triggers a new run. It never overlaps scheduled jobs; mis
 intervals are skipped. Set BACKUP_INTERVAL_HOURS to a number of hours (minimum 1).
 Do not add a second Coolify scheduled job for this service.
 
-## Deploy and configure through the setup page
+## Deploy and configure through the config page
 
 The [README installation steps](../README.md#install-with-coolify) are the primary walkthrough.
 Use Docker Compose from Git, Base Directory `/`, Compose Location `/compose.yaml`, one replica
 of each service and the shared persistent `backup-cache` volume. Assign an HTTPS domain to
-`github-setup`, forwarding to container port 8080, with no published host port. If Coolify
+`github-config`, forwarding to container port 8080, with no published host port. If Coolify
 uses a target-port suffix in its domain field, enter `https://github-backup.example.com:8080`;
 the public URL remains `https://github-backup.example.com`. The worker has no domain.
 
-Only two environment values are required for a new installation:
+Only the config HTTPS URL is required in the environment for a new installation:
 
 ```dotenv
-GITHUB_SETUP_URL=https://github-backup.example.com
-GITHUB_SETUP_PASSWORD=REPLACE_WITH_OUTPUT_OF_OPENSSL_RAND_HEX_32
+GITHUB_CONFIG_URL=https://github-backup.example.com
 ```
 
-Generate a unique random password with `openssl rand -hex 32` (minimum 24 characters).
 The URL is the exact HTTPS origin without a path or internal target port. Enable Buildtime
-and Runtime on supplied variables for Compose interpolation; keep secrets masked. Save and
-deploy. Do not add a Coolify scheduled task: the worker includes scheduling.
+and Runtime on supplied variables for Compose interpolation. Save and deploy. Do not add a
+Coolify scheduled task: the worker includes scheduling.
 
-Open that URL, log in as **admin**, and fill out DigitalOcean Spaces in the form. Enter the
+The first visit shows registration. Retrieve the one-time code from the **`github-config`
+service Terminal** in Coolify:
+
+```bash
+python -m github_backup.config_auth registration-code
+```
+
+Choose your own username (3-64 letters, digits, dots, underscores or hyphens) and a unique
+16-128 character password/passphrase, confirm it and store it securely. Register once, then
+log in through the form. Registration is permanently disabled after that first owner is
+created. No reset route or extra users are available. Forgotten credentials require a fresh
+deployment with a new persistent volume; do not delete remote backups. Damaged/deleted auth
+state blocks setup instead of reopening registration. Read [account recovery](GITHUB_APP.md#config-account-and-recovery).
+The registration code is never displayed in the web page or ordinary container logs.
+
+After login, fill out DigitalOcean Spaces in the form. Enter the
 bucket name, region slug, root folder (default `github-backup`), Spaces access key ID and
 matching secret. These values are no longer required in environment variables. Find the
 bucket under DigitalOcean **Spaces Object Storage → Buckets**, and create a key under
@@ -137,15 +150,15 @@ Existing deployments may keep `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `SPA
 are boto3's standard credential names and take **DigitalOcean Spaces** values; no AWS account
 is required. Saved browser Spaces settings take precedence. Remove legacy values after
 verifying the saved configuration to avoid ambiguity. If none are configured, the worker
-waits for browser setup; a partially filled legacy configuration fails clearly.
+waits for browser configuration; a partially filled legacy configuration fails clearly.
 
 Manual single-App configuration remains available through `GITHUB_APP_ID`,
 `GITHUB_APP_OWNERS` and `GITHUB_APP_PRIVATE_KEY_BASE64`. Those values override browser App
 connections. Clear all three to use multiple Apps and repository scopes through setup.
 Manual mode continues requiring All repositories on GitHub. See [manual setup](GITHUB_APP.md#manual-environment-alternative).
 
-The setup password and URL have no safe universal defaults. Optional variables do have
-defaults; keep secrets out of Git/Dockerfiles. Coolify's Developer environment view can
+The config URL has no universal default. The account password is chosen in the registration
+form and is never stored in an environment variable. Optional operational variables have defaults; keep secrets out of Git/Dockerfiles. Coolify's Developer environment view can
 remove omitted entries when saving; Normal view lets you edit individual masked values.
 Preserve environment log redaction. The compose file builds the checked-out source; use a
 reviewed revision, not automatic GitHub-triggered updates.
@@ -158,8 +171,11 @@ Startup failures may also write standard Python tracebacks to stderr. The Docker
 rotates at 3 × 10 MB; no application log files or extra log volume are required.
 
 For optional external monitoring, create a Kuma **Push** monitor with **180-second heartbeat
-interval**, **0 retries**, and a tested notification channel. Add its generated secret URL to
-`UPTIME_KUMA_PUSH_URL` and redeploy. Leave the value empty to disable monitoring completely.
+interval**, **0 retries**, and a tested notification channel. In setup, enter its generated
+secret URL under **Uptime Kuma**, enable monitoring and save. It takes effect within 30 seconds
+without redeployment. Leave the URL input blank to retain the saved secret; uncheck Enable
+and save to disable monitoring. Saved monitoring choices override legacy `UPTIME_KUMA_*`
+environment values. For private HTTP Kuma, explicitly check the trusted-private-network opt-in.
 The scheduler sends every 60 seconds plus status changes and reports failures and overdue
 successes, rather than sending unconditional up pings. A monitoring-server failure never stops
 backups. [The monitoring guide](MONITORING.md) explains all settings, startup behavior,
@@ -323,7 +339,7 @@ docker compose up -d --build
 docker compose logs -f github-backup
 ```
 
-Point the setup domain at a local HTTPS reverse proxy targeting the setup service on port 8080;
+Point the config domain at a local HTTPS reverse proxy targeting the config service on port 8080;
 the stack intentionally does not publish host ports. The environment file and private-key
 files are excluded from the build context.
 
@@ -348,3 +364,37 @@ restore directory. Run periodic restore drills independent of the backup worker.
 [CISA's ransomware guidance](https://www.cisa.gov/sites/default/files/2023-10/StopRansomware-Guide-508C-v3_1.pdf)
 recommends offline backups and regular restoration testing. The storage budget is deliberately
 fail-closed: it does not sacrifice the last good copies to keep a green status.
+
+## Config interface, account changes and activity
+
+The page uses the neutral shadcn-style visual language with locally served CSS and a tiny
+script for appearance/time formatting. It has no third-party scripts, fonts or trackers.
+Light/dark/system appearance works on desktop and iPhone-sized screens; forms use labeled
+controls, keyboard focus indicators and touch targets at least 44 pixels high.
+
+Follow **Storage → GitHub connections → Repository scope**, then verify a completed check in
+**Activity**. Reopen configured sections to edit them. **Account** changes require your current
+password, invalidate every session and keep registration closed. Forgotten credentials still
+require a fresh persistent deployment or a complete known-good authentication restore.
+
+The worker stores at most 250 completed repository results in the private local file
+`/cache/backup-history/history.sqlite3`. The config service reads it without needing S3 access
+for Activity. History includes successes and failures, excludes raw error payloads/credentials,
+and is independent of remote manifests and retention. History failures do not stop backups.
+Deleting the local cache loses this activity history; it never deletes remote backup versions.
+
+The current service name is `github-config` and the canonical URL variable is `GITHUB_CONFIG_URL`.
+The old `GITHUB_SETUP_URL` remains a compatibility fallback; new installations should use the
+new name. After upgrading, reassign the HTTPS domain to `github-config` port 8080
+and remove any leftover route/container for `github-setup` without deleting volumes.
+Reuse the existing `backup-cache` volume. Owners may need to log in again after the cookie
+name changes; their credentials are retained. Existing private `setup-auth` storage paths and the deployment seal are intentionally
+retained to preserve registered accounts. Do not rename/delete these files during upgrades.
+
+Security headers prevent framing, caching of private pages, external resources, inline scripts
+and browser referrer leakage. Values are contextually escaped; forms enforce field allowlists,
+length limits, single-value parameters, CSRF tokens and typed validation. Passwords and secrets
+are never inserted into the DOM as saved values. Password characters are not globally forbidden:
+a password is hashed, not interpreted as HTML. Protect the host, persistent volume, proxy and
+browser as well; application protections cannot secure a compromised administrator device/host.
+Keep HTTPS, disable request-body/query logging, retain independent credentials and disk encryption.

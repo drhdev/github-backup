@@ -67,6 +67,11 @@ def validate_spaces(data: dict[str, Any]) -> S3Config:
         ord(char) < 32 for char in data["prefix"]
     ):
         raise ValueError("Use a nonempty exclusive prefix without dot or empty segments")
+    if len(data["prefix"]) > 200 or not re.fullmatch(r"[A-Za-z0-9_./-]+", data["prefix"]):
+        raise ValueError("Use letters, digits, underscores, dots, dashes and slashes in the root")
+    for name in ("access_key_id", "secret_access_key"):
+        if not re.fullmatch(r"[A-Za-z0-9/+=_.-]{1,256}", data[name]):
+            raise ValueError("Invalid Spaces credential format")
     s3 = S3Config(
         bucket=data["bucket"],
         prefix=data["prefix"],

@@ -182,6 +182,7 @@ def test_setup_saves_tested_spaces_without_echoing_secrets(ui, monkeypatch):
     replacement = {
         **candidate,
         "bucket": "other-bucket",
+        "current_password": "Correct-horse-battery-42!",
         "csrf": token,
         "access_key_id": "",
         "secret_access_key": "",
@@ -196,7 +197,16 @@ def test_setup_saves_tested_spaces_without_echoing_secrets(ui, monkeypatch):
     before = setup.CREDENTIALS.read_bytes()
     check.side_effect = RuntimeError("private-secret")
     status, _, body = request(
-        ui, "/spaces", "POST", {**candidate, "csrf": token, "confirm_destination": "yes"}, cookie
+        ui,
+        "/spaces",
+        "POST",
+        {
+            **candidate,
+            "csrf": token,
+            "confirm_destination": "yes",
+            "current_password": "Correct-horse-battery-42!",
+        },
+        cookie,
     )
     assert status == "400 Bad Request" and "private-secret" not in body
     assert setup.CREDENTIALS.read_bytes() == before

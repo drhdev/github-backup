@@ -34,6 +34,8 @@ class PushMonitor:
             raise ValueError("UPTIME_KUMA_TIMEOUT_SECONDS must be between 0 and 30")
         if not math.isfinite(max_age_hours) or max_age_hours <= 0:
             raise ValueError("Uptime Kuma success-age limit must be positive and finite")
+        if len(url) > 2048 or any(ord(c) < 32 or ord(c) == 127 for c in url):
+            raise ValueError("Invalid Push URL length or control characters")
         parts = urlsplit(url)
         if url and (
             parts.scheme not in (("https", "http") if allow_http else ("https",))
@@ -71,6 +73,31 @@ class PushMonitor:
             timeout=float(os.getenv("UPTIME_KUMA_TIMEOUT_SECONDS", "5")),
             max_age_hours=age or 2 * interval_hours + 1,
         )
+
+    @classmethod
+    def from_settings(cls, settings: Mapping[str, Any], interval_hours: float) -> PushMonitor:
+        if (
+            not isinstance(settings.get("enabled"), bool)
+            or not isinstance(settings.get("allow_http", False), bool)
+            or not isinstance(settings.get("url", ""), str)
+        ):
+            raise ValueError("Invalid saved monitoring configuration")
+        url = settings.get("url", "").strip()
+        if settings["enabled"] and not url:
+            raise ValueError("A Push URL is required when monitoring is enabled")
+        age = float(settings.get("max_success_age_hours", 0))
+        if not math.isfinite(age) or age < 0:
+            raise ValueError("Monitoring maximum age must be finite and nonnegative")
+        # Validate saved URLs even while disabled, without sending a synthetic success ping.
+        result = cls(
+            url,
+            allow_http=settings.get("allow_http", False),
+            timeout=float(settings.get("timeout_seconds", 5)),
+            max_age_hours=age or 2 * interval_hours + 1,
+        )
+        if not settings["enabled"]:
+            result.url = ""
+        return result
 
     def tick(self, state: Mapping[str, Any]) -> None:
         if not self.url:
